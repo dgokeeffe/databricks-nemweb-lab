@@ -7,7 +7,8 @@
 # MAGIC This notebook validates your environment and pre-loads NEMWEB data for the lab exercises.
 # MAGIC
 # MAGIC ## Requirements
-# MAGIC - DBR 15.4+ cluster (Python Data Source API requires Spark 4.0)
+# MAGIC - **Serverless compute** (recommended) - Environment Version 4 has Spark 4.0
+# MAGIC - Or DBR 15.4+ cluster (Python Data Source API requires Spark 4.0)
 # MAGIC - Internet access to nemweb.com.au
 # MAGIC - Unity Catalog enabled workspace
 
@@ -31,8 +32,10 @@ print(f"Spark version: {spark_version}")
 major_version = int(spark_version.split(".")[0])
 if major_version < 4:
     raise RuntimeError(
-        f"This lab requires Spark 4.0+ (DBR 15.4+). Current version: {spark_version}\n"
-        "Please switch to a cluster running DBR 15.4 or later."
+        f"This lab requires Spark 4.0+. Current version: {spark_version}\n"
+        "Options:\n"
+        "  1. Use Serverless compute (Environment Version 4)\n"
+        "  2. Use a cluster with DBR 15.4+"
     )
 else:
     print("✓ Spark version is compatible with Python Data Source API")

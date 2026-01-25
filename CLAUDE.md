@@ -134,5 +134,11 @@ NEMWEB API (HTTP/ZIP/CSV) → Custom Datasource → Lakeflow Pipeline (DLT)
 - Tests must pass without Spark cluster (unit tests with mocks)
 
 ### Constraints
-- DBR 15.4+ / Spark 4.0+ required for Python Data Source API
+- Serverless (Environment Version 4) or DBR 15.4+ required for Python Data Source API
+- Spark 4.0+ required - `spark.dataSource.register()` not available in earlier versions
 - All HTTP calls must implement retry logic with backoff
+
+### Local Development
+- Use `nemweb_local.py` with DuckDB for quick iteration (no Spark required)
+- Use `local_spark_iceberg.py` for Spark + Iceberg testing (limited - no DataSource API)
+- Full DataSource API testing requires Databricks Serverless or DBR 15.4+ cluster
