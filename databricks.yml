@@ -19,7 +19,7 @@ variables:
   # SQL Warehouse for dashboard queries
   warehouse_id:
     lookup:
-      warehouse: "Shared Unity Catalog Serverless"
+      warehouse: "Serverless Starter Warehouse"
 
   # Environment for deployment paths
   environment:
