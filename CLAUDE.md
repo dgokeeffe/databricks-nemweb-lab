@@ -43,8 +43,11 @@ databricks bundle validate --var="environment=dev"
 # Deploy to Databricks
 databricks bundle deploy --var="environment=dev"
 
-# Run workflow
-databricks bundle run demo_workflow --target dev --var="environment=dev"
+# Run lab workflow
+databricks bundle run nemweb_lab_workflow --target dev --var="environment=dev"
+
+# Run solutions workflow (instructor)
+databricks bundle run nemweb_lab_solutions --target dev --var="environment=dev"
 
 # Cleanup deployment
 databricks bundle destroy --target dev --var="environment=dev"
@@ -59,6 +62,9 @@ databricks apps deploy nemweb-prices --source-code-path ./databricks-nemweb-lab/
 # Local development (from app directory)
 cd databricks-nemweb-lab/app && pip install -r requirements.txt
 gunicorn app:server -b 0.0.0.0:8050 --workers 2
+
+# Run app tests
+python -m pytest databricks-nemweb-lab/app/test_app.py -v
 ```
 
 ## Architecture
@@ -87,9 +93,10 @@ NEMWEB API (HTTP/ZIP/CSV) → Custom Datasource → Lakeflow Pipeline (DLT)
 - `MetricsDataSource` - Publishes metrics to observability endpoints
 
 **src/pipeline/nemweb_pipeline.py** - Spark Declarative Pipeline definitions:
-- Bronze layer: Raw NEMWEB ingestion
-- Silver layer: Data cleansing and validation
-- Uses `@dp.table()` decorators
+- Bronze layer: Raw NEMWEB ingestion with ingestion timestamp
+- Silver layer: Data cleansing, type casting, and quality expectations
+- Gold layer: Hourly aggregations
+- Uses `@dp.table()` decorators from `pyspark.pipelines`
 
 **app/app.py** - Dash dashboard with:
 - Live price cards for 5 NEM regions (NSW1, QLD1, SA1, VIC1, TAS1)
