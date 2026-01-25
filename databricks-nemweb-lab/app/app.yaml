@@ -1,0 +1,25 @@
+# Databricks App Configuration
+# See: https://docs.databricks.com/dev-tools/databricks-apps/app-runtime
+
+# Command to run the app (Dash uses gunicorn in production)
+command:
+  - gunicorn
+  - app:server
+  - --bind
+  - "0.0.0.0:8000"
+  - --workers
+  - "2"
+
+# Environment variables
+env:
+  # Data source: "sample" for demo data, "delta" for real data
+  - name: NEMWEB_DATA_SOURCE
+    value: "sample"
+
+  # Delta table name (if using delta source)
+  - name: NEMWEB_DELTA_TABLE
+    value: "nemweb_bronze"
+
+  # Optional: SQL Warehouse ID for querying Delta tables
+  # - name: DATABRICKS_WAREHOUSE_ID
+  #   value: "your-warehouse-id"

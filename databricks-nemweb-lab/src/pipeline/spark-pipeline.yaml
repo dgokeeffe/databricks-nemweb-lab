@@ -1,0 +1,10 @@
+# Spark Declarative Pipeline Spec
+# For local testing with spark-pipelines CLI
+
+name: nemweb-pipeline
+catalog: spark_catalog
+schema: nemweb
+
+# Source files containing pipeline definitions
+source_files:
+  - nemweb_pipeline.py

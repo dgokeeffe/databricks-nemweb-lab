@@ -1,0 +1,40 @@
+{
+  "name": "nemweb-ingestion-pipeline",
+  "target": "nemweb_data",
+  "catalog": "main",
+  "development": true,
+  "continuous": false,
+  "channel": "PREVIEW",
+  "photon": true,
+  "clusters": [
+    {
+      "label": "default",
+      "autoscale": {
+        "min_workers": 1,
+        "max_workers": 2,
+        "mode": "ENHANCED"
+      }
+    }
+  ],
+  "libraries": [
+    {
+      "notebook": {
+        "path": "/Workspace/Users/${user}/databricks-nemweb-lab/notebooks/02_lakeflow_pipeline"
+      }
+    }
+  ],
+  "configuration": {
+    "nemweb.start_date": "2024-01-01",
+    "nemweb.end_date": "2024-06-30",
+    "nemweb.regions": "NSW1,QLD1,SA1,VIC1,TAS1",
+    "spark.sql.shuffle.partitions": "auto"
+  },
+  "notifications": [
+    {
+      "email_notifications": {
+        "on_failure": ["your-email@company.com"]
+      }
+    }
+  ],
+  "_comment": "Lakeflow Declarative Pipeline configuration for NEMWEB data ingestion. Replace ${user} with your username."
+}
