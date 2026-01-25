@@ -89,6 +89,9 @@ def update_checkpoint(
     """
     from pyspark.sql.functions import current_timestamp, lit
 
+    # Ensure checkpoint table exists
+    _ensure_batch_checkpoint_table(spark, checkpoint_table)
+
     # Create checkpoint records
     records = [{"partition_id": pid} for pid in partition_ids]
     df = spark.createDataFrame(records)
@@ -99,9 +102,35 @@ def update_checkpoint(
         for key, value in metadata.items():
             df = df.withColumn(key, lit(value))
 
-    # Append to checkpoint table (create if not exists)
-    df.write.mode("append").saveAsTable(checkpoint_table)
+    # Create temp view for MERGE source
+    df.createOrReplaceTempView("_checkpoint_updates")
+
+    # MERGE: upsert all partition IDs in one operation
+    # This is idempotent - re-running updates completed_at but doesn't duplicate
+    merge_sql = f"""
+        MERGE INTO {checkpoint_table} AS target
+        USING _checkpoint_updates AS source
+        ON target.partition_id = source.partition_id
+        WHEN MATCHED THEN
+            UPDATE SET completed_at = source.completed_at
+        WHEN NOT MATCHED THEN
+            INSERT *
+    """
+    spark.sql(merge_sql)
     logger.info(f"Updated checkpoint with {len(partition_ids)} partition(s)")
+
+
+def _ensure_batch_checkpoint_table(spark, checkpoint_table: str) -> None:
+    """Create batch checkpoint table if it doesn't exist."""
+    if not spark.catalog.tableExists(checkpoint_table):
+        spark.sql(f"""
+            CREATE TABLE IF NOT EXISTS {checkpoint_table} (
+                partition_id STRING NOT NULL,
+                completed_at TIMESTAMP
+            )
+            USING DELTA
+            TBLPROPERTIES ('delta.enableChangeDataFeed' = 'false')
+        """)
 
 
 def get_partition_ids(
@@ -363,11 +392,14 @@ class NemwebStreamReader(SimpleDataSourceStreamReader):
             if spark is None:
                 return None
 
-            df = spark.read.table(self.checkpoint_table)
-            row = (df
+            # Check if table exists
+            if not spark.catalog.tableExists(self.checkpoint_table):
+                logger.info(f"Checkpoint table {self.checkpoint_table} doesn't exist yet")
+                return None
+
+            # With MERGE, there's exactly one row per stream_id
+            row = (spark.read.table(self.checkpoint_table)
                    .filter(f"stream_id = '{self.stream_id}'")
-                   .orderBy("updated_at", ascending=False)
-                   .limit(1)
                    .collect())
 
             if row:
@@ -380,33 +412,65 @@ class NemwebStreamReader(SimpleDataSourceStreamReader):
             return None
 
     def _save_progress(self, offset_timestamp: str) -> None:
-        """Save offset to checkpoint table."""
+        """
+        Save offset to checkpoint table using MERGE (upsert).
+
+        This keeps exactly one row per stream_id, avoiding table growth
+        and ensuring atomic updates.
+        """
         if not self.checkpoint_table:
             return
 
         try:
             from pyspark.sql import SparkSession
-            from pyspark.sql.functions import current_timestamp, lit
-
             spark = SparkSession.getActiveSession()
             if spark is None:
                 return
 
-            # Create checkpoint record
-            record = [{
-                "stream_id": self.stream_id,
-                "offset_timestamp": offset_timestamp,
-                "table": self.table,
-                "regions": ",".join(self.regions)
-            }]
-            df = spark.createDataFrame(record)
-            df = df.withColumn("updated_at", current_timestamp())
+            # Ensure checkpoint table exists
+            self._ensure_checkpoint_table(spark)
 
-            # Append to checkpoint table
-            df.write.mode("append").saveAsTable(self.checkpoint_table)
+            # MERGE: update if exists, insert if not
+            spark.sql(f"""
+                MERGE INTO {self.checkpoint_table} AS target
+                USING (
+                    SELECT
+                        '{self.stream_id}' AS stream_id,
+                        '{offset_timestamp}' AS offset_timestamp,
+                        '{self.table}' AS source_table,
+                        '{",".join(self.regions)}' AS regions,
+                        current_timestamp() AS updated_at
+                ) AS source
+                ON target.stream_id = source.stream_id
+                WHEN MATCHED THEN
+                    UPDATE SET
+                        offset_timestamp = source.offset_timestamp,
+                        source_table = source.source_table,
+                        regions = source.regions,
+                        updated_at = source.updated_at
+                WHEN NOT MATCHED THEN
+                    INSERT (stream_id, offset_timestamp, source_table, regions, updated_at)
+                    VALUES (source.stream_id, source.offset_timestamp, source.source_table,
+                            source.regions, source.updated_at)
+            """)
             logger.info(f"Saved checkpoint for {self.stream_id}: {offset_timestamp}")
         except Exception as e:
             logger.error(f"Failed to save checkpoint: {e}")
+
+    def _ensure_checkpoint_table(self, spark) -> None:
+        """Create checkpoint table if it doesn't exist."""
+        if not spark.catalog.tableExists(self.checkpoint_table):
+            spark.sql(f"""
+                CREATE TABLE IF NOT EXISTS {self.checkpoint_table} (
+                    stream_id STRING NOT NULL,
+                    offset_timestamp STRING,
+                    source_table STRING,
+                    regions STRING,
+                    updated_at TIMESTAMP
+                )
+                USING DELTA
+                TBLPROPERTIES ('delta.enableChangeDataFeed' = 'false')
+            """)
 
     def initialOffset(self) -> dict:
         """
