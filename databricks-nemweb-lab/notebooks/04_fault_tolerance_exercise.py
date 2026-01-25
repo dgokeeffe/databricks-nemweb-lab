@@ -39,6 +39,10 @@
 
 # COMMAND ----------
 
+# Add src directory to path for imports
+import sys
+sys.path.append("../src")
+
 from pyspark.sql.functions import col, current_timestamp, lit
 from pyspark.sql.types import StructType, StructField, StringType, TimestampType
 from datetime import datetime

@@ -114,6 +114,10 @@ print(f"Source path: {src_path}")
 
 # COMMAND ----------
 
+# Add src directory to path for imports
+import sys
+sys.path.append("../src")
+
 try:
     from nemweb_utils import fetch_nemweb_data, get_nemweb_schema, get_nem_regions
     print("✓ nemweb_utils imported successfully")
