@@ -1,1 +1,13 @@
-# Check here to get the latest version of the databricks-cli: https://github.com/databricks/cli
+# Databricks NEMWEB Lab - Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# Databricks SDK (for local development and IDE support)
+databricks-sdk>=0.20.0
+
+# Testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# PySpark (for local testing - match your DBR version)
+# Uncomment if testing locally without Databricks Connect
+# pyspark>=3.5.0

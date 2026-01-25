@@ -1,19 +1,27 @@
 bundle:
-  name: demo_workflow
+  name: nemweb-lab
 
 variables:
-  # Project name - replace with your solution accelerator name
+  # NEMWEB Lab configuration
   project_name:
-    description: "Name of your solution accelerator"
-    default: "my-solution-accelerator"
-    
-  # The "warehouse_id" variable is used to reference the warehouse used by the dashboard.
+    description: "Name of the NEMWEB solution accelerator lab"
+    default: "nemweb-lab"
+
+  # Unity Catalog configuration
+  catalog:
+    description: "Unity Catalog catalog name"
+    default: "main"
+
+  schema:
+    description: "Unity Catalog schema name"
+    default: "nemweb_lab"
+
+  # SQL Warehouse for dashboard queries
   warehouse_id:
     lookup:
-      # Replace this with the name of your SQL warehouse.
       warehouse: "Shared Unity Catalog Serverless"
-      
-  # Environment variable used for deployment paths
+
+  # Environment for deployment paths
   environment:
     description: "Deployment environment (dev, staging, prod)"
     default: "dev"
@@ -23,72 +31,74 @@ targets:
     default: true
     mode: development
 
-# Customize the resources below based on your solution accelerator needs
+  prod:
+    mode: production
+
 resources:
-  # Uncomment and customize if you have Databricks Apps
-  # apps:
-  #   your_app:
-  #     name: "your-app-name"
-  #     description: "Your app description"
-  #     source_code_path: "/Users/${workspace.current_user.userName}/${var.project_name}-${var.environment}/files/apps/your_app"
+  # NEMWEB Price Dashboard App
+  apps:
+    nemweb_prices:
+      name: "nemweb-prices-${var.environment}"
+      description: "Real-time NEM electricity price dashboard"
+      source_code_path: "./databricks-nemweb-lab/app"
 
-  # Uncomment and customize if you have dashboards
-  # dashboards:
-  #   your_dashboard:
-  #     display_name: "Your Dashboard"
-  #     file_path: "./dashboards/your_dashboard.lvdash.json"
-  #     warehouse_id: "${var.warehouse_id}"
-
-  # Example job workflow - customize based on your notebooks
+  # Lab workflow - runs exercises in sequence
   jobs:
-    example_workflow:
-      name: "${var.project_name} - Example Workflow"
+    nemweb_lab_workflow:
+      name: "${var.project_name} - Lab Exercises [${var.environment}]"
       tasks:
-        - task_key: example_notebook
+        - task_key: setup_validation
           notebook_task:
-            notebook_path: "./notebooks/example_notebook.ipynb"
-        - task_key: example_databricks_notebook
-          depends_on:
-            - task_key: example_notebook
-          notebook_task:
-            notebook_path: "./notebooks/example_databricks_notebook.py"
+            notebook_path: "./databricks-nemweb-lab/notebooks/00_setup_and_validation.py"
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
 
-# Example resources you can uncomment and customize:
-# resources:
-#   apps:
-#     your_app:
-#       name: "your-app-name"
-#       description: "Your app description"
-#       source_code_path: "./apps/your_app"
-#
-#   jobs:
-#     your_workflow:
-#       name: "Your Workflow Name"
-#       tasks:
-#         - task_key: first_task
-#           notebook_task:
-#             notebook_path: "./notebooks/your_first_notebook.ipynb"
-#         - task_key: second_task
-#           depends_on:
-#             - task_key: first_task
-#           notebook_task:
-#             notebook_path: "./notebooks/your_second_notebook.ipynb"
-#
-#   pipelines:
-#     your_pipeline:
-#       name: "Your Pipeline"
-#       storage: "/Shared/your-pipeline"
-#       configuration:
-#         your_config: "value"
-#
-#   models:
-#     your_model:
-#       name: "Your Model"
-#       model_path: "models/your_model"
-#
-#   dashboards:
-#     your_dashboard:
-#       display_name: "Your Dashboard"
-#       file_path: "./dashboards/your_dashboard.lvdash.json"
+        - task_key: custom_datasource
+          depends_on:
+            - task_key: setup_validation
+          notebook_task:
+            notebook_path: "./databricks-nemweb-lab/notebooks/01_custom_datasource_exercise.py"
+
+        - task_key: lakeflow_pipeline
+          depends_on:
+            - task_key: custom_datasource
+          notebook_task:
+            notebook_path: "./databricks-nemweb-lab/notebooks/02_lakeflow_pipeline_exercise.py"
+
+        - task_key: cluster_sizing
+          depends_on:
+            - task_key: lakeflow_pipeline
+          notebook_task:
+            notebook_path: "./databricks-nemweb-lab/notebooks/03a_cluster_sizing_exercise.py"
+
+        - task_key: optimization_comparison
+          depends_on:
+            - task_key: lakeflow_pipeline
+          notebook_task:
+            notebook_path: "./databricks-nemweb-lab/notebooks/03b_optimization_comparison.py"
+
+    # Solution workflow for instructors
+    nemweb_lab_solutions:
+      name: "${var.project_name} - Solutions [${var.environment}]"
+      tasks:
+        - task_key: setup_validation
+          notebook_task:
+            notebook_path: "./databricks-nemweb-lab/notebooks/00_setup_and_validation.py"
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+
+        - task_key: custom_datasource_solution
+          depends_on:
+            - task_key: setup_validation
+          notebook_task:
+            notebook_path: "./databricks-nemweb-lab/solutions/01_custom_datasource_solution.py"
+
+        - task_key: lakeflow_pipeline_solution
+          depends_on:
+            - task_key: custom_datasource_solution
+          notebook_task:
+            notebook_path: "./databricks-nemweb-lab/solutions/02_lakeflow_pipeline_solution.py"
 
 # For more options and schema, see: https://docs.databricks.com/aws/en/dev-tools/bundles/settings

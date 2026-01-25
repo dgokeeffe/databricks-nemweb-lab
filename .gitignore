@@ -18,6 +18,9 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.coverage
+.pytest_cache/
+htmlcov/
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
@@ -25,3 +28,4 @@ build/
 # Environment files
 .env
 .env.local 
+optimization.md
