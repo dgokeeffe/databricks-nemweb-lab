@@ -159,7 +159,13 @@ print("ENVIRONMENT VALIDATION COMPLETE")
 print("=" * 60)
 print(f"Python:        {sys.version.split()[0]}")
 print(f"Spark:         {spark.version}")
-print(f"Cluster:       {spark.sparkContext.applicationId}")
+
+# sparkContext not available on serverless
+try:
+    print(f"Cluster:       {spark.sparkContext.applicationId}")
+except Exception:
+    print(f"Compute:       Serverless")
+
 print(f"NEMWEB Access: Verified")
 print("=" * 60)
 
