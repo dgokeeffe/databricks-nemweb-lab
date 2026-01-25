@@ -9,7 +9,22 @@ Usage:
     spark.dataSource.register(NemwebDataSource)
     df = spark.read.format("nemweb").option("table", "DISPATCHREGIONSUM").load()
 
-    # Streaming with automatic checkpointing
+    # Batch with checkpoint-based resumability
+    df = (spark.read.format("nemweb")
+          .option("checkpoint_table", "main.nemweb.checkpoints")
+          .option("start_date", "2024-01-01")
+          .option("end_date", "2024-06-30")
+          .load())
+
+    # Write to target table
+    df.write.mode("append").saveAsTable("main.nemweb.bronze")
+
+    # Update checkpoints after successful write (REQUIRED for resumability)
+    from nemweb_datasource import update_checkpoint, get_partition_ids
+    partition_ids = get_partition_ids("2024-01-01", "2024-06-30", ["NSW1","VIC1","QLD1","SA1","TAS1"])
+    update_checkpoint(spark, "main.nemweb.checkpoints", partition_ids)
+
+    # Streaming with automatic checkpointing (Spark manages offsets)
     df = spark.readStream.format("nemweb").load()
 
 References:
@@ -36,6 +51,93 @@ except ImportError:
     from nemweb_utils import fetch_nemweb_data, parse_nemweb_csv, get_nemweb_schema
 
 logger = logging.getLogger(__name__)
+
+
+def update_checkpoint(
+    spark,
+    checkpoint_table: str,
+    partition_ids: list[str],
+    metadata: dict = None
+) -> None:
+    """
+    Update checkpoint table after successful batch write.
+
+    The Python Data Source API doesn't have a callback for partition completion,
+    so checkpoints must be updated by the pipeline after successful writes.
+
+    Usage:
+        # Read with checkpoint filtering
+        df = (spark.read.format("nemweb")
+              .option("checkpoint_table", "main.nemweb.checkpoints")
+              .option("start_date", "2024-01-01")
+              .option("end_date", "2024-06-30")
+              .load())
+
+        # Write to target
+        df.write.mode("append").saveAsTable("main.nemweb.bronze")
+
+        # Update checkpoints after successful write
+        from nemweb_datasource import update_checkpoint, get_partition_ids
+        partition_ids = get_partition_ids("2024-01-01", "2024-06-30", ["NSW1", "VIC1"])
+        update_checkpoint(spark, "main.nemweb.checkpoints", partition_ids)
+
+    Args:
+        spark: SparkSession
+        checkpoint_table: Fully qualified table name (catalog.schema.table)
+        partition_ids: List of partition IDs that were successfully processed
+        metadata: Optional dict with additional columns (e.g., {"job_id": "123"})
+    """
+    from pyspark.sql.functions import current_timestamp, lit
+
+    # Create checkpoint records
+    records = [{"partition_id": pid} for pid in partition_ids]
+    df = spark.createDataFrame(records)
+    df = df.withColumn("completed_at", current_timestamp())
+
+    # Add optional metadata columns
+    if metadata:
+        for key, value in metadata.items():
+            df = df.withColumn(key, lit(value))
+
+    # Append to checkpoint table (create if not exists)
+    df.write.mode("append").saveAsTable(checkpoint_table)
+    logger.info(f"Updated checkpoint with {len(partition_ids)} partition(s)")
+
+
+def get_partition_ids(
+    start_date: str,
+    end_date: str,
+    regions: list[str],
+    table: str = "DISPATCHREGIONSUM"
+) -> list[str]:
+    """
+    Generate partition IDs for a date range and regions.
+
+    Use this to get the IDs that should be marked as complete after a successful write.
+
+    Args:
+        start_date: Start date (YYYY-MM-DD)
+        end_date: End date (YYYY-MM-DD)
+        regions: List of region IDs
+        table: MMS table name
+
+    Returns:
+        List of partition ID strings
+    """
+    start = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d")
+
+    partition_ids = []
+    current = start
+    while current <= end:
+        date_str = current.strftime("%Y-%m-%d")
+        for region in regions:
+            id_string = f"{table}:{region}:{date_str}"
+            partition_id = hashlib.md5(id_string.encode()).hexdigest()[:12]
+            partition_ids.append(partition_id)
+        current += timedelta(days=1)
+
+    return partition_ids
 
 
 class NemwebPartition(InputPartition):
@@ -211,19 +313,29 @@ class NemwebDataSourceReader(DataSourceReader):
 
 class NemwebStreamReader(SimpleDataSourceStreamReader):
     """
-    Streaming reader for NEMWEB data with automatic offset management.
+    Streaming reader for NEMWEB data with custom checkpoint management.
 
-    Spark handles checkpointing automatically when using streaming.
-    The offset tracks the latest timestamp processed.
+    IMPORTANT: Native Structured Streaming checkpointing does NOT work with
+    custom data sources. This reader implements its own progress tracking
+    via _load_progress() and _save_progress() methods.
+
+    Options:
+        table: MMS table name (default: DISPATCHREGIONSUM)
+        regions: Comma-separated region IDs
+        checkpoint_table: Delta table for storing offsets (REQUIRED for resumability)
+        stream_id: Unique identifier for this stream (default: "nemweb_stream")
+        start_timestamp: Initial timestamp if no checkpoint exists
 
     Usage:
         (spark.readStream
             .format("nemweb")
             .option("table", "DISPATCHREGIONSUM")
+            .option("checkpoint_table", "main.nemweb.stream_checkpoints")
+            .option("stream_id", "nemweb_ingest_prod")
             .load()
             .writeStream
             .format("delta")
-            .option("checkpointLocation", "/checkpoints/nemweb")
+            .option("checkpointLocation", "/checkpoints/nemweb")  # Spark's internal checkpoint
             .toTable("nemweb_bronze"))
     """
 
@@ -233,15 +345,80 @@ class NemwebStreamReader(SimpleDataSourceStreamReader):
         self.regions = [r.strip() for r in options.get("regions", "NSW1,QLD1,SA1,VIC1,TAS1").split(",")]
         self.schema = get_nemweb_schema(self.table)
 
-        # Polling interval (how far back to look for new data)
-        self.lookback_minutes = int(options.get("lookback_minutes", "30"))
+        # Checkpoint configuration
+        self.checkpoint_table = options.get("checkpoint_table")
+        self.stream_id = options.get("stream_id", "nemweb_stream")
+
+        # Load saved progress if checkpoint table exists
+        self._saved_offset = self._load_progress()
+
+    def _load_progress(self) -> Optional[str]:
+        """Load saved offset from checkpoint table."""
+        if not self.checkpoint_table:
+            return None
+
+        try:
+            from pyspark.sql import SparkSession
+            spark = SparkSession.getActiveSession()
+            if spark is None:
+                return None
+
+            df = spark.read.table(self.checkpoint_table)
+            row = (df
+                   .filter(f"stream_id = '{self.stream_id}'")
+                   .orderBy("updated_at", ascending=False)
+                   .limit(1)
+                   .collect())
+
+            if row:
+                offset = row[0]["offset_timestamp"]
+                logger.info(f"Loaded checkpoint for {self.stream_id}: {offset}")
+                return offset
+            return None
+        except Exception as e:
+            logger.warning(f"Could not load checkpoint: {e}")
+            return None
+
+    def _save_progress(self, offset_timestamp: str) -> None:
+        """Save offset to checkpoint table."""
+        if not self.checkpoint_table:
+            return
+
+        try:
+            from pyspark.sql import SparkSession
+            from pyspark.sql.functions import current_timestamp, lit
+
+            spark = SparkSession.getActiveSession()
+            if spark is None:
+                return
+
+            # Create checkpoint record
+            record = [{
+                "stream_id": self.stream_id,
+                "offset_timestamp": offset_timestamp,
+                "table": self.table,
+                "regions": ",".join(self.regions)
+            }]
+            df = spark.createDataFrame(record)
+            df = df.withColumn("updated_at", current_timestamp())
+
+            # Append to checkpoint table
+            df.write.mode("append").saveAsTable(self.checkpoint_table)
+            logger.info(f"Saved checkpoint for {self.stream_id}: {offset_timestamp}")
+        except Exception as e:
+            logger.error(f"Failed to save checkpoint: {e}")
 
     def initialOffset(self) -> dict:
         """
         Return the initial offset for streaming.
 
-        Can be overridden with start_timestamp option.
+        Priority: 1) Saved checkpoint, 2) start_timestamp option, 3) 1 hour ago
         """
+        # First, check for saved progress
+        if self._saved_offset:
+            return {"timestamp": self._saved_offset}
+
+        # Then check for explicit start timestamp
         start = self.options.get("start_timestamp")
         if start:
             return {"timestamp": start}
@@ -314,11 +491,15 @@ class NemwebStreamReader(SimpleDataSourceStreamReader):
 
     def commit(self, end: dict) -> None:
         """
-        Called when Spark commits the offset to checkpoint.
+        Called when Spark commits the offset after successful microbatch.
 
-        Can be used for cleanup or logging.
+        This is where we persist our custom checkpoint to ensure resumability.
         """
-        logger.info(f"Committed offset: {end['timestamp']}")
+        offset_timestamp = end["timestamp"]
+        logger.info(f"Committing offset: {offset_timestamp}")
+
+        # Save progress to checkpoint table
+        self._save_progress(offset_timestamp)
 
 
 class NemwebDataSource(DataSource):
