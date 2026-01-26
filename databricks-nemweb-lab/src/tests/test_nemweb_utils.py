@@ -224,10 +224,10 @@ class TestConvertValue:
         assert _convert_value(None, StringType()) is None
         assert _convert_value("", DoubleType()) is None
 
-    def test_invalid_timestamp_returns_string(self):
-        """Should return original string if timestamp parsing fails."""
+    def test_invalid_timestamp_returns_none(self):
+        """Should return None if timestamp parsing fails (required for Spark compatibility)."""
         result = _convert_value("invalid-date", TimestampType())
-        assert result == "invalid-date"
+        assert result is None
 
 
 class TestParseNemwebCsv:
@@ -404,11 +404,15 @@ class TestFetchNemwebData:
 
     def test_fetches_real_data_with_mock(self):
         """Should fetch and parse real data (mocked)."""
-        # Create a mock ZIP file with CSV
-        csv_content = "REGIONID,TOTALDEMAND\nNSW1,7500.5\nVIC1,5200.3"
+        # Create a mock ZIP file with NEMWEB multi-record CSV format
+        csv_content = """C,NEMP.WORLD,DISPATCHIS,AEMO,PUBLIC,2024/01/01
+I,DISPATCH,REGIONSUM,4,SETTLEMENTDATE,RUNNO,REGIONID,DISPATCHINTERVAL,INTERVENTION,TOTALDEMAND
+D,DISPATCH,REGIONSUM,4,"2024/01/01 00:05:00",1,NSW1,1,0,7500.5
+D,DISPATCH,REGIONSUM,4,"2024/01/01 00:05:00",1,VIC1,1,0,5200.3
+C,END OF REPORT"""
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w") as zf:
-            zf.writestr("PUBLIC_DISPATCHREGIONSUM.CSV", csv_content)
+            zf.writestr("PUBLIC_DISPATCHIS.CSV", csv_content)
         zip_data = zip_buffer.getvalue()
 
         mock_response = MagicMock()
@@ -425,6 +429,7 @@ class TestFetchNemwebData:
 
         assert len(data) == 2
         assert data[0]["REGIONID"] == "NSW1"
+        assert data[0]["TOTALDEMAND"] == "7500.5"
 
     def test_handles_404_gracefully(self):
         """Should handle 404 errors and continue."""
@@ -443,9 +448,9 @@ class TestFetchNemwebData:
 class TestTableToFolderMapping:
     """Tests for TABLE_TO_FOLDER constant."""
 
-    def test_dispatchregionsum_maps_to_dispatch_scada(self):
-        """DISPATCHREGIONSUM should map to Dispatch_SCADA folder."""
-        assert TABLE_TO_FOLDER["DISPATCHREGIONSUM"] == "Dispatch_SCADA"
+    def test_dispatchregionsum_maps_to_dispatchis_reports(self):
+        """DISPATCHREGIONSUM should map to DispatchIS_Reports folder."""
+        assert TABLE_TO_FOLDER["DISPATCHREGIONSUM"] == "DispatchIS_Reports"
 
     def test_dispatchprice_maps_to_dispatchis_reports(self):
         """DISPATCHPRICE should map to DispatchIS_Reports folder."""

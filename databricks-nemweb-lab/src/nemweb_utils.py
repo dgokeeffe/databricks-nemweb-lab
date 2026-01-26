@@ -262,10 +262,13 @@ def _parse_nemweb_csv_file(csv_file, record_type: str = None) -> list[dict]:
     """
     Parse a NEMWEB CSV file, handling the multi-record format.
 
-    NEMWEB CSV format:
+    NEMWEB CSV format (MMS format with multiple tables per file):
         C,... = Comment/metadata row
         I,CATEGORY,RECORD_TYPE,VERSION,COL1,COL2,... = Header row
         D,CATEGORY,RECORD_TYPE,VERSION,VAL1,VAL2,... = Data row
+
+    Uses csv.reader for proper handling of quoted fields (e.g., timestamps).
+    Based on OpenNEM's parsing approach: https://github.com/opennem/opennem
 
     Args:
         csv_file: File-like object for the CSV
@@ -276,46 +279,46 @@ def _parse_nemweb_csv_file(csv_file, record_type: str = None) -> list[dict]:
         List of dictionaries
     """
     text = csv_file.read().decode("utf-8")
-    lines = text.strip().split("\n")
 
     if not record_type:
         # Standard CSV format - use DictReader
         reader = csv.DictReader(io.StringIO(text))
         return list(reader)
 
-    # NEMWEB multi-record format
+    # NEMWEB multi-record format - use csv.reader for proper quote handling
     rows = []
     headers = None
 
-    for line in lines:
-        if not line.strip():
+    # csv.reader properly handles quoted fields like "2025/12/27 00:05:00"
+    reader = csv.reader(io.StringIO(text))
+
+    for parts in reader:
+        if not parts:
             continue
 
-        parts = line.split(",")
-        row_type = parts[0] if parts else ""
+        row_type = parts[0].strip().upper()
 
         if row_type == "I":
             # Header row: I,CATEGORY,RECORD_TYPE,VERSION,COL1,COL2,...
-            row_record = f"{parts[1]},{parts[2]}" if len(parts) > 2 else ""
-            if row_record == record_type:
-                # Columns start at index 4 (after I,CATEGORY,RECORD,VERSION)
-                headers = parts[4:]
+            if len(parts) > 2:
+                row_record = f"{parts[1]},{parts[2]}"
+                if row_record == record_type:
+                    # Columns start at index 4 (after I,CATEGORY,RECORD,VERSION)
+                    headers = parts[4:]
 
         elif row_type == "D" and headers:
             # Data row: D,CATEGORY,RECORD_TYPE,VERSION,VAL1,VAL2,...
-            row_record = f"{parts[1]},{parts[2]}" if len(parts) > 2 else ""
-            if row_record == record_type:
-                # Values start at index 4
-                values = parts[4:]
-                # Create dict, stripping quotes from values
-                row_dict = {}
-                for i, header in enumerate(headers):
-                    if i < len(values):
-                        val = values[i].strip('"')
-                        row_dict[header] = val
-                    else:
+            if len(parts) > 2:
+                row_record = f"{parts[1]},{parts[2]}"
+                if row_record == record_type:
+                    # Values start at index 4
+                    values = parts[4:]
+                    # Create dict - csv.reader already handles quote stripping
+                    row_dict = dict(zip(headers, values))
+                    # Fill missing values with None
+                    for header in headers[len(values):]:
                         row_dict[header] = None
-                rows.append(row_dict)
+                    rows.append(row_dict)
 
     return rows
 
@@ -424,13 +427,23 @@ def _convert_value(value: str, spark_type) -> any:
     elif isinstance(spark_type, IntegerType):
         return int(float(value))
     elif isinstance(spark_type, TimestampType):
-        # NEMWEB format: "2024/01/01 00:05:00" or "2024-01-01 00:05:00"
-        for fmt in ["%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"]:
+        # NEMWEB timestamp formats (various formats observed in AEMO data)
+        timestamp_formats = [
+            "%Y/%m/%d %H:%M:%S",      # 2024/01/01 00:05:00
+            "%Y-%m-%d %H:%M:%S",      # 2024-01-01 00:05:00
+            "%Y/%m/%d %H:%M",         # 2024/01/01 00:05 (no seconds)
+            "%Y-%m-%d %H:%M",         # 2024-01-01 00:05 (no seconds)
+            "%d/%m/%Y %H:%M:%S",      # 01/01/2024 00:05:00 (AU format)
+            "%d/%m/%Y %H:%M",         # 01/01/2024 00:05 (AU format, no seconds)
+        ]
+        for fmt in timestamp_formats:
             try:
                 return datetime.strptime(value, fmt)
             except ValueError:
                 continue
-        return value  # Return as string if parsing fails
+        # Return None if parsing fails - Spark requires datetime objects for TimestampType
+        logger.warning(f"Could not parse timestamp value: {value}")
+        return None
     else:
         return str(value)
 
