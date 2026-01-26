@@ -246,12 +246,26 @@ class NemwebArrowReader(DataSourceReader):
         start = datetime.strptime(self.start_date, "%Y-%m-%d")
         end = datetime.strptime(self.end_date, "%Y-%m-%d")
 
+        print(f"Generating download tasks for {self.start_date} to {self.end_date}")
+        print(f"Target folder: {table_path}")
+
+        # Note: Daily consolidated files are only available in ARCHIVE after ~7 days
+        # Recent dates will return 404 since CURRENT only has 5-minute interval files
+        archive_cutoff = datetime.now() - timedelta(days=7)
+
         tasks = []
+        skipped_recent = 0
         current = start
         while current <= end:
             date_str = current.strftime("%Y%m%d")
             filename = f"PUBLIC_{file_prefix}_{date_str}.zip"
             dest_path = os.path.join(table_path, filename)
+
+            # Skip dates that are too recent (not yet in ARCHIVE)
+            if current > archive_cutoff:
+                skipped_recent += 1
+                current += timedelta(days=1)
+                continue
 
             if self.skip_existing and os.path.exists(dest_path):
                 tasks.append({
@@ -271,8 +285,19 @@ class NemwebArrowReader(DataSourceReader):
 
             current += timedelta(days=1)
 
+        if skipped_recent > 0:
+            print(f"Note: Skipping {skipped_recent} recent days (< 7 days old, not yet in ARCHIVE)")
+
         to_download = [t for t in tasks if not t["skip"]]
         skipped = len([t for t in tasks if t["skip"]])
+
+        # Print progress for user visibility (logger might not be visible in notebooks)
+        print(f"NEMWEB Download: {len(tasks)} days total, {len(to_download)} to download, {skipped} existing/skipped")
+
+        # Show sample URLs for verification
+        if to_download:
+            sample = to_download[0]
+            print(f"Sample URL: {sample['url']}")
 
         logger.info(
             f"NEMWEB Download: {len(tasks)} days, "
@@ -280,6 +305,7 @@ class NemwebArrowReader(DataSourceReader):
         )
 
         if not to_download:
+            print("All files already exist, skipping download.")
             return
 
         # Download files in parallel
@@ -303,6 +329,17 @@ class NemwebArrowReader(DataSourceReader):
                     results["not_found"] += 1
                 else:
                     results["failed"] += 1
+
+        # Print results for user visibility
+        print(
+            f"Download complete: {results['success']} successful, "
+            f"{results['not_found']} not found (404), {results['failed']} failed"
+        )
+        if results['not_found'] > 0:
+            print(
+                f"  Note: {results['not_found']} files returned 404 - "
+                "these dates may not yet be in ARCHIVE (data takes ~7 days to consolidate)"
+            )
 
         logger.info(
             f"Download complete: {results['success']} successful, "
@@ -361,15 +398,19 @@ class NemwebArrowReader(DataSourceReader):
         }
 
     def _build_download_url(self, folder: str, file_prefix: str, date: datetime) -> str:
-        """Build NEMWEB URL for downloading a file."""
-        days_ago = (datetime.now() - date).days
+        """
+        Build NEMWEB URL for downloading a file.
+
+        Note: Daily consolidated files (PUBLIC_DISPATCHIS_YYYYMMDD.zip) are only
+        available in ARCHIVE. The CURRENT folder only has 5-minute interval files.
+        So we always use ARCHIVE for daily downloads.
+        """
         date_str = date.strftime("%Y%m%d")
         filename = f"PUBLIC_{file_prefix}_{date_str}.zip"
 
-        if days_ago < 7:
-            return f"{NEMWEB_CURRENT_URL}/{folder}/{filename}"
-        else:
-            return f"{NEMWEB_ARCHIVE_URL}/{folder}/{filename}"
+        # Daily consolidated files are only in ARCHIVE
+        # (CURRENT has 5-minute interval files, not daily consolidated)
+        return f"{NEMWEB_ARCHIVE_URL}/{folder}/{filename}"
 
     def read(self, partition: NemwebArrowPartition) -> Iterator:
         """
@@ -482,17 +523,19 @@ class NemwebArrowReader(DataSourceReader):
             raise
 
     def _build_url(self, table: str, date_str: str) -> str:
-        """Build NEMWEB URL for the specified table and date."""
+        """
+        Build NEMWEB URL for the specified table and date.
+
+        Note: Daily consolidated files are only in ARCHIVE.
+        CURRENT has 5-minute interval files, not daily consolidated.
+        """
         folder, prefix = TABLE_TO_FOLDER.get(table, ("DispatchIS_Reports", "DISPATCHIS"))
         date = datetime.strptime(date_str, "%Y-%m-%d")
         date_formatted = date.strftime("%Y%m%d")
         filename = f"PUBLIC_{prefix}_{date_formatted}.zip"
 
-        days_ago = (datetime.now() - date).days
-        if days_ago < 7:
-            return f"{NEMWEB_CURRENT_URL}/{folder}/{filename}"
-        else:
-            return f"{NEMWEB_ARCHIVE_URL}/{folder}/{filename}"
+        # Daily consolidated files are only in ARCHIVE
+        return f"{NEMWEB_ARCHIVE_URL}/{folder}/{filename}"
 
     def _build_arrow_schema(self, fields: list) -> "pa.Schema":
         """Build PyArrow schema from field definitions."""
