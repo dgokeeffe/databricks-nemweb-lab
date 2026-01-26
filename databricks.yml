@@ -2,6 +2,13 @@ bundle:
   name: nemweb-lab
   databricks_cli_version: ">= 0.283.0"
 
+# Build the nemweb-datasource wheel artifact
+artifacts:
+  nemweb_datasource:
+    type: whl
+    build: "cd databricks-nemweb-lab && uv build src --wheel"
+    path: "./databricks-nemweb-lab/src"
+
 variables:
   # NEMWEB Lab configuration
   project_name:

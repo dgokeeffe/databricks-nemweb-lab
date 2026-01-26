@@ -1,0 +1,19 @@
+# Serverless Base Environment for NEMWEB Lab
+#
+# This environment spec includes the nemweb-datasource package pre-installed.
+# Deploy as a workspace base environment for all notebooks to use.
+#
+# Setup instructions:
+# 1. Deploy the bundle: databricks bundle deploy
+# 2. Go to Workspace Settings > Compute > Base environments
+# 3. Click "Manage" > "Create new environment"
+# 4. Select this file from: /Volumes/{catalog}/{schema}/artifacts/environment.yml
+# 5. Set as default (star icon) for all new notebooks
+#
+# Or reference directly in notebooks:
+#   %environment /Volumes/main/nemweb_lab/artifacts/environment.yml
+#
+environment_version: "4"
+dependencies:
+  # NEMWEB datasource wheel from UC Volume
+  - /Volumes/main/nemweb_lab/artifacts/nemweb_datasource-latest.whl
