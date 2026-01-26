@@ -2,325 +2,249 @@
 # MAGIC %md
 # MAGIC # Lab Setup and Validation
 # MAGIC
-# MAGIC **Time:** 5 minutes (validation) + ~5 minutes (data pre-load)
+# MAGIC **Time:** ~5 minutes (validation) + ~5 minutes (data download)
 # MAGIC
 # MAGIC This notebook validates your environment and pre-loads NEMWEB data for the lab exercises.
 # MAGIC
+# MAGIC ## What This Notebook Does
+# MAGIC 1. Validates cluster runtime (Spark 4.0+ required)
+# MAGIC 2. Tests network connectivity to NEMWEB
+# MAGIC 3. Builds and installs the lab package
+# MAGIC 4. Downloads NEMWEB data to UC Volume (parallel)
+# MAGIC 5. Loads data into Delta table using custom data source
+# MAGIC
 # MAGIC ## Requirements
-# MAGIC - **Serverless compute** (recommended) - Environment Version 4 has Spark 4.0
-# MAGIC - Or DBR 15.4+ cluster (Python Data Source API requires Spark 4.0)
+# MAGIC - **Serverless compute** (recommended) or DBR 15.4+ cluster
 # MAGIC - Internet access to nemweb.com.au
 # MAGIC - Unity Catalog enabled workspace
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 1. Cluster Runtime Validation
+# MAGIC ## 1. Configuration
 
 # COMMAND ----------
 
-import sys
-print(f"Python version: {sys.version}")
+# Lab configuration - modify these if needed
+CATALOG = "main"
+SCHEMA = "nemweb_lab"
+RAW_TABLE = "nemweb_raw"
+VOLUME_NAME = "raw_files"
 
-from pyspark.sql import SparkSession
-spark = SparkSession.builder.getOrCreate()
+# Date range for data loading (last 6 months)
+from datetime import datetime, timedelta
 
-spark_version = spark.version
-print(f"Spark version: {spark_version}")
+END_DATE = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+START_DATE = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
 
-# Validate Spark 4.0+ for Python Data Source API
-major_version = int(spark_version.split(".")[0])
-if major_version < 4:
-    raise RuntimeError(
-        f"This lab requires Spark 4.0+. Current version: {spark_version}\n"
-        "Options:\n"
-        "  1. Use Serverless compute (Environment Version 4)\n"
-        "  2. Use a cluster with DBR 15.4+"
-    )
-else:
-    print("✓ Spark version is compatible with Python Data Source API")
+# Derived paths
+VOLUME_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}"
+TABLE_PATH = f"{CATALOG}.{SCHEMA}.{RAW_TABLE}"
+
+print("Lab Configuration")
+print("=" * 50)
+print(f"Catalog:      {CATALOG}")
+print(f"Schema:       {SCHEMA}")
+print(f"Table:        {RAW_TABLE}")
+print(f"Volume:       {VOLUME_PATH}")
+print(f"Date range:   {START_DATE} to {END_DATE}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 2. Python Data Source API Availability
+# MAGIC ## 2. Validate Cluster Runtime
+
+# COMMAND ----------
+
+import sys
+from pyspark.sql import SparkSession
+
+spark = SparkSession.builder.getOrCreate()
+
+print(f"Python version: {sys.version.split()[0]}")
+print(f"Spark version:  {spark.version}")
+
+# Validate Spark 4.0+ for Python Data Source API
+major_version = int(spark.version.split(".")[0])
+if major_version < 4:
+    raise RuntimeError(
+        f"This lab requires Spark 4.0+. Current version: {spark.version}\n"
+        "Use Serverless compute or DBR 15.4+ cluster."
+    )
+
+print("✓ Spark version compatible")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 3. Validate Python Data Source API
 
 # COMMAND ----------
 
 try:
     from pyspark.sql.datasource import DataSource, DataSourceReader
-    print("✓ Python Data Source API is available")
+    print("✓ Python Data Source API available")
 except ImportError as e:
     raise ImportError(
-        "Python Data Source API not available. "
-        "This feature requires DBR 15.4+ / Spark 4.0+"
+        "Python Data Source API not available. Requires DBR 15.4+ / Spark 4.0+"
     ) from e
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 3. Network Connectivity to NEMWEB
+# MAGIC ## 4. Validate Network Connectivity
 
 # COMMAND ----------
 
 import urllib.request
 import urllib.error
 
-NEMWEB_TEST_URL = "https://www.nemweb.com.au/REPORTS/CURRENT/"
+NEMWEB_URL = "https://www.nemweb.com.au/REPORTS/CURRENT/"
 
 try:
-    request = urllib.request.Request(
-        NEMWEB_TEST_URL,
-        headers={"User-Agent": "DatabricksNemwebLab/1.0"}
-    )
+    request = urllib.request.Request(NEMWEB_URL, headers={"User-Agent": "DatabricksLab/1.0"})
     with urllib.request.urlopen(request, timeout=10) as response:
-        status = response.status
-        if status == 200:
-            print(f"✓ NEMWEB connectivity verified (HTTP {status})")
-        else:
-            print(f"⚠ NEMWEB returned unexpected status: {status}")
+        print(f"✓ NEMWEB connectivity verified (HTTP {response.status})")
 except urllib.error.URLError as e:
-    raise RuntimeError(
-        f"Cannot connect to NEMWEB: {e}\n"
-        "Ensure your cluster has internet access and nemweb.com.au is not blocked."
-    )
+    raise RuntimeError(f"Cannot connect to NEMWEB: {e}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 4. Lab Source Code Installation
-# MAGIC
-# MAGIC Build and install the nemweb-datasource package from the src folder.
-# MAGIC
-# MAGIC > **Reference:** [Importing workspace files](https://docs.databricks.com/aws/en/ldp/import-workspace-files)
+# MAGIC ## 5. Build and Install Lab Package
 
 # COMMAND ----------
 
-# Compute the workspace path to src folder
 import os
-
-# Get current notebook's workspace location
-notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
-print(f"Notebook path: {notebook_path}")
-
-# Navigate up from notebooks/ to repo root, then into src/
-repo_root = str(os.path.dirname(os.path.dirname(notebook_path)))
-src_path = f"/Workspace{repo_root}/src"
-
-print(f"Source path: {src_path}")
-
-# Verify the path exists
-if os.path.exists(src_path):
-    print(f"✓ Path exists")
-    print(f"  Contents: {[f for f in os.listdir(src_path) if f.endswith('.py')]}")
-else:
-    raise FileNotFoundError(f"Source path not found: {src_path}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### Build the wheel using uv
-# MAGIC
-# MAGIC This ensures we have a fresh build with the latest code.
-
-# COMMAND ----------
-
 import subprocess
 import glob
 
-# Build wheel from src directory using uv
+# Get workspace paths
+notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
+repo_root = os.path.dirname(os.path.dirname(notebook_path))
 workspace_root = f"/Workspace{repo_root}"
-build_cmd = f"cd {workspace_root} && uv build src --wheel"
-print(f"Building wheel: {build_cmd}")
+src_path = f"{workspace_root}/src"
 
-result = subprocess.run(build_cmd, shell=True, capture_output=True, text=True)
-if result.returncode == 0:
-    print("✓ Wheel built successfully")
-else:
-    print(f"Build output: {result.stdout}")
-    if result.stderr:
-        print(f"Build errors: {result.stderr}")
-
-# Find the built wheel
-wheel_pattern = f"{src_path}/dist/nemweb_datasource-*.whl"
-wheels = glob.glob(wheel_pattern)
-
-if wheels:
-    # Get the latest wheel (sorted by name, which includes version)
-    latest_wheel = sorted(wheels)[-1]
-    print(f"✓ Found wheel: {latest_wheel}")
-else:
-    raise FileNotFoundError(f"No wheel found at {wheel_pattern}. Check build output above.")
+print(f"Repository: {workspace_root}")
+print(f"Source:     {src_path}")
 
 # COMMAND ----------
 
-# Install the wheel (force reinstall to ensure latest version)
+# Build wheel
+print("Building wheel...")
+result = subprocess.run(
+    f"cd {workspace_root} && uv build src --wheel",
+    shell=True, capture_output=True, text=True
+)
+
+if result.returncode != 0:
+    print(f"Build output: {result.stdout}")
+    print(f"Build errors: {result.stderr}")
+    raise RuntimeError("Wheel build failed")
+
+# Find wheel
+wheels = glob.glob(f"{src_path}/dist/nemweb_datasource-*.whl")
+if not wheels:
+    raise FileNotFoundError("No wheel found after build")
+
+latest_wheel = sorted(wheels)[-1]
+print(f"✓ Built: {os.path.basename(latest_wheel)}")
+
+# COMMAND ----------
+
+# Install wheel
 %pip install $latest_wheel --force-reinstall -q
 
 # COMMAND ----------
 
-# Restart Python to pick up the installed package
+# Restart Python to load new package
 dbutils.library.restartPython()
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 5. Test Import of Lab Modules
+# MAGIC ## 6. Verify Package Installation
 
 # COMMAND ----------
 
-try:
-    from nemweb_utils import fetch_nemweb_data, get_nemweb_schema, get_nem_regions, get_version
-    print("✓ nemweb_utils imported successfully")
+# Re-import after restart
+from pyspark.sql import SparkSession
+spark = SparkSession.builder.getOrCreate()
 
-    version = get_version()
-    print(f"  Package version: {version}")
+# Verify imports
+from nemweb_utils import get_version, get_nem_regions
+from nemweb_ingest import download_nemweb_files
+from nemweb_datasource import NemwebDataSource
 
-    regions = get_nem_regions()
-    print(f"  Available NEM regions: {regions}")
+print(f"✓ Package version: {get_version()}")
+print(f"✓ NEM regions: {get_nem_regions()}")
 
-except ImportError as e:
-    print(f"⚠ Could not import lab modules: {e}")
-    print("  Re-run section 4 to install the package")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 6. Register Custom Data Source
-
-# COMMAND ----------
-
-try:
-    from nemweb_datasource import NemwebDataSource
-    spark.dataSource.register(NemwebDataSource)
-    print("✓ NEMWEB custom data source registered")
-except ImportError as e:
-    print(f"⚠ Could not register data source: {e}")
-    print("  Re-run section 4 to install the package")
-except Exception as e:
-    print(f"⚠ Registration error: {e}")
-    print("  You'll register it manually in exercise 01")
+# Register data source
+spark.dataSource.register(NemwebDataSource)
+print("✓ Custom data source registered")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 7. Environment Summary
-
-# COMMAND ----------
-import sys
-from nemweb_utils import get_version
-
-print("=" * 60)
-print("ENVIRONMENT VALIDATION COMPLETE")
-print("=" * 60)
-print(f"Python:        {sys.version.split()[0]}")
-print(f"Spark:         {spark.version}")
-print(f"nemweb-datasource: v{get_version()}")
-
-# sparkContext not available on serverless
-try:
-    print(f"Cluster:       {spark.sparkContext.applicationId}")
-except Exception:
-    print(f"Compute:       Serverless")
-
-print(f"NEMWEB Access: Verified")
-print("=" * 60)
+# MAGIC ## 7. Create Schema and Volume
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ---
-# MAGIC # Data Pre-Loading for Optimization Exercise
-# MAGIC
-# MAGIC The following section pre-loads NEMWEB data into a Delta table for use in Exercise 03 (Optimization Comparison).
-# MAGIC
-# MAGIC **Architecture:**
-# MAGIC 1. Download ZIP files from NEMWEB to UC Volume (parallel, on driver)
-# MAGIC 2. Read from Volume using custom data source (parallel, on workers)
-# MAGIC 3. Write to Delta table
-# MAGIC
-# MAGIC **Run this section once before the workshop to prepare the data.**
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Configuration
-
-# COMMAND ----------
-
-# Lab configuration
+# Re-define config after restart
 CATALOG = "main"
 SCHEMA = "nemweb_lab"
 RAW_TABLE = "nemweb_raw"
 VOLUME_NAME = "raw_files"
-
-# UC Volume path for raw files
 VOLUME_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}"
+TABLE_PATH = f"{CATALOG}.{SCHEMA}.{RAW_TABLE}"
 
-# Data range - uses last 6 months from today
 from datetime import datetime, timedelta
-
-# End date is yesterday (today's data may be incomplete)
 END_DATE = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-# Start date is 6 months ago
 START_DATE = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
 
-REGIONS = "NSW1,QLD1,SA1,VIC1,TAS1"
-
-print(f"Target table: {CATALOG}.{SCHEMA}.{RAW_TABLE}")
-print(f"Volume path: {VOLUME_PATH}")
-print(f"Date range: {START_DATE} to {END_DATE}")
-print(f"Regions: {REGIONS}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Create Schema and Volume
-
-# COMMAND ----------
-
+# Create catalog, schema, volume
 spark.sql(f"CREATE CATALOG IF NOT EXISTS {CATALOG}")
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
 spark.sql(f"CREATE VOLUME IF NOT EXISTS {CATALOG}.{SCHEMA}.{VOLUME_NAME}")
-spark.sql(f"USE {CATALOG}.{SCHEMA}")
-print(f"✓ Using schema: {CATALOG}.{SCHEMA}")
-print(f"✓ Volume ready: {VOLUME_PATH}")
+
+print(f"✓ Schema: {CATALOG}.{SCHEMA}")
+print(f"✓ Volume: {VOLUME_PATH}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Check if Data Already Exists
+# MAGIC ## 8. Check Existing Data
 
 # COMMAND ----------
 
-table_exists = spark.catalog.tableExists(f"{CATALOG}.{SCHEMA}.{RAW_TABLE}")
+table_exists = spark.catalog.tableExists(TABLE_PATH)
 
 if table_exists:
-    existing_count = spark.table(f"{CATALOG}.{SCHEMA}.{RAW_TABLE}").count()
-    print(f"⚠ Table {RAW_TABLE} already exists with {existing_count:,} rows")
-    print("  Set FORCE_RELOAD = True below to reload data")
+    row_count = spark.table(TABLE_PATH).count()
+    print(f"Table {RAW_TABLE} exists with {row_count:,} rows")
+    print("Set FORCE_RELOAD = True to reload")
     FORCE_RELOAD = False
 else:
-    print(f"Table {RAW_TABLE} does not exist - will create and load data")
+    print(f"Table {RAW_TABLE} does not exist - will load data")
     FORCE_RELOAD = True
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 1: Download NEMWEB Files to UC Volume
+# MAGIC ---
+# MAGIC ## 9. Download NEMWEB Files to UC Volume
 # MAGIC
 # MAGIC Downloads ZIP files in parallel (8 threads) to the UC Volume.
-# MAGIC This runs on the driver and handles all HTTP complexity.
 
 # COMMAND ----------
 
 if FORCE_RELOAD or not table_exists:
     from nemweb_ingest import download_nemweb_files
 
-    print("Step 1: Downloading NEMWEB files to UC Volume...")
-    print("-" * 50)
+    print(f"Downloading NEMWEB data: {START_DATE} to {END_DATE}")
+    print("=" * 50)
 
-    download_results = download_nemweb_files(
+    results = download_nemweb_files(
         volume_path=VOLUME_PATH,
         table="DISPATCHREGIONSUM",
         start_date=START_DATE,
@@ -329,15 +253,14 @@ if FORCE_RELOAD or not table_exists:
         skip_existing=True
     )
 else:
-    print("✓ Skipping download - using existing data")
+    print("✓ Skipping download - data exists")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Step 2: Read from Volume Using Custom Data Source
+# MAGIC ## 10. Load Data Using Custom Data Source
 # MAGIC
-# MAGIC The custom data source reads from local Volume files (no HTTP on workers).
-# MAGIC Each ZIP file becomes a partition for parallel processing.
+# MAGIC Reads from Volume files using the custom PySpark data source.
 
 # COMMAND ----------
 
@@ -345,87 +268,59 @@ if FORCE_RELOAD or not table_exists:
     import time
     start_time = time.time()
 
-    print("Step 2: Reading from Volume using custom data source...")
-    print("-" * 50)
+    print("Loading data from Volume...")
+    print("=" * 50)
 
-    # Register data source
-    try:
-        from nemweb_datasource import NemwebDataSource
-        spark.dataSource.register(NemwebDataSource)
-    except:
-        pass  # Already registered
-
-    # Read from Volume (not HTTP!)
-    nemweb_df = (
-        spark.read
+    # Read from Volume using custom data source
+    df = (spark.read
         .format("nemweb")
         .option("volume_path", VOLUME_PATH)
         .option("table", "DISPATCHREGIONSUM")
-        .option("regions", REGIONS)
-        .load()
-    )
+        .load())
 
-    # Drop existing table if reloading
-    if FORCE_RELOAD and table_exists:
-        spark.sql(f"DROP TABLE IF EXISTS {CATALOG}.{SCHEMA}.{RAW_TABLE}")
+    # Write to Delta
+    if table_exists:
+        spark.sql(f"DROP TABLE IF EXISTS {TABLE_PATH}")
 
-    # Write to Delta table
-    nemweb_df.write \
-        .format("delta") \
-        .mode("overwrite") \
-        .saveAsTable(f"{CATALOG}.{SCHEMA}.{RAW_TABLE}")
+    df.write.format("delta").mode("overwrite").saveAsTable(TABLE_PATH)
 
     elapsed = time.time() - start_time
-    row_count = spark.table(f"{CATALOG}.{SCHEMA}.{RAW_TABLE}").count()
+    row_count = spark.table(TABLE_PATH).count()
 
-    print("-" * 50)
-    print(f"✓ Loaded {row_count:,} rows in {elapsed:.1f} seconds")
-    print(f"✓ Data saved to: {CATALOG}.{SCHEMA}.{RAW_TABLE}")
+    print("=" * 50)
+    print(f"✓ Loaded {row_count:,} rows in {elapsed:.1f}s")
 else:
-    print(f"✓ Using existing data in {CATALOG}.{SCHEMA}.{RAW_TABLE}")
+    print("✓ Using existing data")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Verify Pre-loaded Data
+# MAGIC ## 11. Verify Loaded Data
 
 # COMMAND ----------
 
-from databricks.sdk.runtime import spark, display
+from databricks.sdk.runtime import display
+from pyspark.sql.functions import min, max, countDistinct
 
-# Show data summary
-raw_df = spark.table(f"{CATALOG}.{SCHEMA}.{RAW_TABLE}")
+df = spark.table(TABLE_PATH)
 
-print(f"Table: {CATALOG}.{SCHEMA}.{RAW_TABLE}")
-print(f"Row count: {raw_df.count():,}")
-print(f"\nSchema:")
-raw_df.printSchema()
+print(f"Table: {TABLE_PATH}")
+print(f"Rows:  {df.count():,}")
+print()
 
-print("\nSample data:")
-display(raw_df.limit(5))
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Data Statistics
-
-# COMMAND ----------
-
-from pyspark.sql.functions import min, max, count, countDistinct
-
-stats = raw_df.agg(
+# Statistics
+stats = df.agg(
     min("SETTLEMENTDATE").alias("min_date"),
     max("SETTLEMENTDATE").alias("max_date"),
-    countDistinct("REGIONID").alias("regions"),
-    count("*").alias("total_rows")
+    countDistinct("REGIONID").alias("regions")
 ).collect()[0]
 
-print("Data Statistics:")
-print("-" * 40)
-print(f"Date range:    {stats['min_date']} to {stats['max_date']}")
-print(f"Regions:       {stats['regions']}")
-print(f"Total rows:    {stats['total_rows']:,}")
-print(f"Rows per day:  ~{stats['total_rows'] // 180:,} (approx)")
+print(f"Date range: {stats['min_date']} to {stats['max_date']}")
+print(f"Regions:    {stats['regions']}")
+print()
+
+print("Sample data:")
+display(df.limit(5))
 
 # COMMAND ----------
 
@@ -434,25 +329,24 @@ print(f"Rows per day:  ~{stats['total_rows'] // 180:,} (approx)")
 
 # COMMAND ----------
 
+from nemweb_utils import get_version
+
 print("=" * 60)
 print("SETUP COMPLETE")
 print("=" * 60)
 print(f"""
 Environment:
-  - Spark {spark.version} ✓
-  - Python Data Source API ✓
-  - NEMWEB connectivity ✓
-  - Custom data source registered ✓
+  Spark:    {spark.version}
+  Package:  v{get_version()}
 
-Pre-loaded Data:
-  - Table: {CATALOG}.{SCHEMA}.{RAW_TABLE}
-  - Rows: {spark.table(f'{CATALOG}.{SCHEMA}.{RAW_TABLE}').count():,}
-  - Ready for Exercise 03 (Optimization Comparison)
+Data:
+  Table:    {TABLE_PATH}
+  Rows:     {spark.table(TABLE_PATH).count():,}
 
 Next Steps:
-  1. Open notebook 01_custom_source_exercise.py
-  2. Follow the exercises in order
-  3. Exercise 03 will use the pre-loaded data above
+  1. Open 01_custom_source_exercise.py
+  2. Follow exercises in order
+  3. Exercise 03 uses the pre-loaded data
 """)
 print("=" * 60)
 
@@ -461,20 +355,18 @@ print("=" * 60)
 # MAGIC %md
 # MAGIC ## Troubleshooting
 # MAGIC
-# MAGIC ### "Python Data Source API not available"
-# MAGIC - Ensure your cluster is running DBR 15.4 or later
-# MAGIC - Restart the cluster after changing runtime version
+# MAGIC **"Python Data Source API not available"**
+# MAGIC - Use Serverless compute or DBR 15.4+ cluster
 # MAGIC
-# MAGIC ### "Cannot connect to NEMWEB"
+# MAGIC **"Cannot connect to NEMWEB"**
 # MAGIC - Check cluster has internet access
-# MAGIC - Verify firewall rules allow HTTPS to nemweb.com.au
-# MAGIC - Try accessing https://www.nemweb.com.au in a browser
+# MAGIC - Verify nemweb.com.au is not blocked
 # MAGIC
-# MAGIC ### "Data loading is slow"
-# MAGIC - NEMWEB is rate-limited; fetching is sequential
+# MAGIC **"Wheel build failed"**
+# MAGIC - Ensure uv is available: `%sh which uv`
+# MAGIC - Check src directory exists
+# MAGIC
+# MAGIC **Data loading slow**
+# MAGIC - Downloads are parallel (8 threads)
+# MAGIC - Skip existing files with `skip_existing=True`
 # MAGIC - Reduce date range for faster loading
-# MAGIC - Pre-load data before the workshop session
-# MAGIC
-# MAGIC ### "Could not import lab modules"
-# MAGIC - Verify the lab files are uploaded to your workspace
-# MAGIC - The exercise notebooks include inline code as fallback
