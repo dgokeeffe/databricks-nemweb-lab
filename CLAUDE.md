@@ -121,6 +121,10 @@ NEMWEB API (HTTP/ZIP/CSV) → Custom Datasource → Lakeflow Pipeline (DLT)
 
 ## Development Guidelines
 
+### Version Control
+- Commit and push changes regularly as you work through tasks
+- Create meaningful commit messages that describe the changes made
+
 ### Lab Exercise Modifications
 - Keep exercises achievable within 40-minute window
 - Use clear TODO markers for participant tasks

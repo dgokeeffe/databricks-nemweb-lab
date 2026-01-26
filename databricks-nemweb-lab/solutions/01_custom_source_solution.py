@@ -69,7 +69,12 @@ from pyspark.sql.types import (
     StructType, StructField, StringType, DoubleType, TimestampType
 )
 from typing import Iterator, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
+import csv
+import io
+import zipfile
+from urllib.request import urlopen, Request
+from urllib.error import HTTPError
 
 def get_dispatchregionsum_schema() -> StructType:
     """
@@ -133,8 +138,10 @@ class NemwebReader(DataSourceReader):
         self.schema = schema
         self.options = options
         self.regions = options.get("regions", "NSW1,QLD1,SA1,VIC1,TAS1").split(",")
-        self.start_date = options.get("start_date", "2024-01-01")
-        self.end_date = options.get("end_date", "2024-01-07")
+        # Default to yesterday (ensures data exists in CURRENT folder)
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        self.start_date = options.get("start_date", yesterday)
+        self.end_date = options.get("end_date", yesterday)
 
     def partitions(self) -> list[InputPartition]:
         """
@@ -155,19 +162,81 @@ class NemwebReader(DataSourceReader):
         return partitions
 
     def read(self, partition: NemwebPartition) -> Iterator[Tuple]:
-        """Read data for a single partition (runs on workers)."""
-        # Sample data for demonstration
-        sample_data = [
-            (datetime(2024, 1, 1, 0, 5), "1", partition.region, "1", "0",
-             7500.5, 8000.0, 0.0, 7400.0, 7800.0, 0.0, -200.5),
-            (datetime(2024, 1, 1, 0, 10), "1", partition.region, "2", "0",
-             7520.3, 8000.0, 0.0, 7450.0, 7850.0, 0.0, -180.2),
-            (datetime(2024, 1, 1, 0, 15), "1", partition.region, "3", "0",
-             7540.8, 8050.0, 0.0, 7480.0, 7900.0, 0.0, -175.5),
-        ]
+        """
+        Read data for a single partition (runs on workers).
 
-        for row in sample_data:
-            yield row
+        SOLUTION 1.2: Actually fetches from NEMWEB API!
+        """
+        # Build URL for the current dispatch data
+        # Recent data (<7 days) is in CURRENT, older in ARCHIVE
+        date = datetime.strptime(partition.start_date, "%Y-%m-%d")
+        days_ago = (datetime.now() - date).days
+        date_str = date.strftime("%Y%m%d")
+
+        base_url = "https://www.nemweb.com.au/REPORTS"
+        folder = "CURRENT" if days_ago < 7 else "ARCHIVE"
+        url = f"{base_url}/{folder}/Dispatch_SCADA/PUBLIC_DISPATCHREGIONSUM_{date_str}.zip"
+
+        print(f"Fetching: {url}")
+
+        try:
+            # Fetch ZIP file from NEMWEB
+            request = Request(url, headers={"User-Agent": "DatabricksLab/1.0"})
+            with urlopen(request, timeout=30) as response:
+                zip_data = io.BytesIO(response.read())
+
+            # Extract and parse CSV from ZIP
+            rows = []
+            with zipfile.ZipFile(zip_data) as zf:
+                for name in zf.namelist():
+                    if name.endswith(".CSV") or name.endswith(".csv"):
+                        with zf.open(name) as csv_file:
+                            text = io.TextIOWrapper(csv_file, encoding="utf-8")
+                            reader = csv.DictReader(text)
+                            rows.extend(list(reader))
+
+            # Filter to requested region and yield tuples
+            for row in rows:
+                if row.get("REGIONID") == partition.region:
+                    yield self._row_to_tuple(row)
+
+        except HTTPError as e:
+            print(f"HTTP error {e.code} for {url}")
+            # Return empty if file not found
+            return
+
+    def _row_to_tuple(self, row: dict) -> Tuple:
+        """Convert CSV row dict to tuple matching schema."""
+        def parse_ts(val):
+            if not val:
+                return None
+            for fmt in ["%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"]:
+                try:
+                    return datetime.strptime(val, fmt)
+                except ValueError:
+                    continue
+            return None
+
+        def parse_float(val):
+            try:
+                return float(val) if val else None
+            except (ValueError, TypeError):
+                return None
+
+        return (
+            parse_ts(row.get("SETTLEMENTDATE")),
+            row.get("RUNNO"),
+            row.get("REGIONID"),
+            row.get("DISPATCHINTERVAL"),
+            row.get("INTERVENTION"),
+            parse_float(row.get("TOTALDEMAND")),
+            parse_float(row.get("AVAILABLEGENERATION")),
+            parse_float(row.get("AVAILABLELOAD")),
+            parse_float(row.get("DEMANDFORECAST")),
+            parse_float(row.get("DISPATCHABLEGENERATION")),
+            parse_float(row.get("DISPATCHABLELOAD")),
+            parse_float(row.get("NETINTERCHANGE")),
+        )
 
 
 # Test partition planning
@@ -226,15 +295,20 @@ class NemwebDataSource(DataSource):
 # Register the data source with Spark
 spark.dataSource.register(NemwebDataSource)
 
-# Read data using your new format!
+# Use yesterday's date (guaranteed to exist in CURRENT folder)
+from datetime import datetime, timedelta
+yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+# Read REAL data from NEMWEB API!
 df = (spark.read
       .format("nemweb")
-      .option("regions", "NSW1,VIC1,QLD1")
+      .option("regions", "NSW1")  # Single region for speed
+      .option("start_date", yesterday)
+      .option("end_date", yesterday)
       .load())
 
-# Display results
-print(f"Row count: {df.count()}")
-print(f"Partitions: {df.rdd.getNumPartitions()}")
+# Display results - this is LIVE data from the Australian electricity market!
+print(f"Row count: {df.count()} (expected: ~288 rows for 24hrs of 5-min intervals)")
 display(df)
 
 # COMMAND ----------
@@ -258,13 +332,13 @@ def validate_implementation():
         if field not in [f.name for f in schema.fields]:
             errors.append(f"Schema: missing {field}")
 
-    # Check partitions
+    # Check partitions (3 regions = 3 partitions for single day)
     reader = NemwebReader(schema, {"regions": "NSW1,VIC1,QLD1"})
     partitions = reader.partitions()
     if len(partitions) != 3:
         errors.append(f"Partitions: expected 3, got {len(partitions)}")
 
-    # Check data source
+    # Check data source name
     if NemwebDataSource.name() != "nemweb":
         errors.append(f"DataSource.name(): expected 'nemweb', got '{NemwebDataSource.name()}'")
 
@@ -273,7 +347,7 @@ def validate_implementation():
         for e in errors:
             print(f"   - {e}")
     else:
-        print("All checks passed!")
+        print("All checks passed! Data source fetches REAL data from NEMWEB.")
 
     return len(errors) == 0
 

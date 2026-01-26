@@ -102,12 +102,13 @@ display(df)
 # MAGIC ## Now Let's Build a Real One: NEMWEB Data Source
 # MAGIC
 # MAGIC AEMO NEMWEB publishes Australia's National Electricity Market data. We'll create a
-# MAGIC data source that can read this data with options for region filtering.
+# MAGIC data source that **fetches live data** from the NEMWEB HTTP API.
 # MAGIC
 # MAGIC The main difference from our Hello World example:
 # MAGIC - **Real schema** based on AEMO's data model
 # MAGIC - **Partitions** for parallel reading (one per NEM region)
-# MAGIC - **Options** for filtering by region and date
+# MAGIC - **HTTP fetching** from https://www.nemweb.com.au/REPORTS/CURRENT/
+# MAGIC - **ZIP/CSV parsing** - NEMWEB data comes as CSV files inside ZIP archives
 
 # COMMAND ----------
 
@@ -129,7 +130,12 @@ from pyspark.sql.types import (
     StructType, StructField, StringType, DoubleType, TimestampType
 )
 from typing import Iterator, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
+import csv
+import io
+import zipfile
+from urllib.request import urlopen, Request
+from urllib.error import HTTPError
 
 def get_dispatchregionsum_schema() -> StructType:
     """
@@ -146,10 +152,13 @@ def get_dispatchregionsum_schema() -> StructType:
         StructField("INTERVENTION", StringType(), True),
 
         # TODO 1.1: Add the 7 measurement fields below as DoubleType
-        # TOTALDEMAND, AVAILABLEGENERATION, AVAILABLELOAD, DEMANDFORECAST,
-        # DISPATCHABLEGENERATION, DISPATCHABLELOAD, NETINTERCHANGE
+        # Field names: TOTALDEMAND, AVAILABLEGENERATION, AVAILABLELOAD, DEMANDFORECAST,
+        #              DISPATCHABLEGENERATION, DISPATCHABLELOAD, NETINTERCHANGE
+        #
+        # Hint: Follow the same pattern as the fields above:
+        #   StructField("FIELD_NAME", DoubleType(), True),
+        #
         # Docs: https://spark.apache.org/docs/latest/api/python/reference/pyspark.sql/data_types.html
-
 
     ])
 
@@ -162,7 +171,7 @@ for field in schema.fields:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Part 2: Add Partitioning (5 minutes)
+# MAGIC ## Part 2: Add Partitioning and Data Reading (5 minutes)
 # MAGIC
 # MAGIC Spark achieves parallelism by dividing work into **partitions**. Each partition
 # MAGIC can be processed independently on different cores/nodes.
@@ -173,6 +182,10 @@ for field in schema.fields:
 # MAGIC - SA1 (South Australia)
 # MAGIC - VIC1 (Victoria)
 # MAGIC - TAS1 (Tasmania)
+# MAGIC
+# MAGIC You need to implement two methods:
+# MAGIC 1. **`partitions()`** - Plan the work (runs on driver)
+# MAGIC 2. **`read()`** - Do the work (runs on workers)
 # MAGIC
 # MAGIC > **Reference:** [DataSourceReader.partitions()](https://spark.apache.org/docs/latest/api/python/reference/pyspark.sql/api/pyspark.sql.datasource.DataSourceReader.partitions.html)
 
@@ -205,15 +218,27 @@ class NemwebReader(DataSourceReader):
         self.options = options
         # Parse options with sensible defaults
         self.regions = options.get("regions", "NSW1,QLD1,SA1,VIC1,TAS1").split(",")
-        self.start_date = options.get("start_date", "2024-01-01")
-        self.end_date = options.get("end_date", "2024-01-07")
+        # Default to yesterday (ensures data exists in NEMWEB CURRENT folder)
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        self.start_date = options.get("start_date", yesterday)
+        self.end_date = options.get("end_date", yesterday)
 
     def partitions(self) -> list[InputPartition]:
         """
         Plan partitions for parallel reading.
 
-        TODO 1.2: Return a list with one NemwebPartition for each region in self.regions.
-        Use self.start_date and self.end_date for the date range.
+        TODO 1.2a: Return a list with one NemwebPartition for each region in self.regions.
+
+        Hint: Create an empty list, loop through self.regions, and append a
+        NemwebPartition for each one. Use self.start_date and self.end_date.
+
+        Structure:
+            partitions = []
+            for region in self.regions:
+                # Create NemwebPartition and append to list
+                ...
+            return partitions
+
         Docs: https://docs.databricks.com/en/pyspark/datasources.html#partition-data-for-parallel-reads
         """
         pass
@@ -222,18 +247,79 @@ class NemwebReader(DataSourceReader):
         """
         Read data for a single partition (runs on workers).
 
-        This is provided - it returns sample data for the partition's region.
-        In production, this would fetch from NEMWEB HTTP API.
+        TODO 1.2b: Implement real HTTP fetching from NEMWEB!
         """
-        # Sample data for demonstration
-        sample_data = [
-            (datetime(2024, 1, 1, 0, 5), "1", partition.region, "1", "0",
-             7500.5, 8000.0, 0.0, 7400.0, 7800.0, 0.0, -200.5),
-            (datetime(2024, 1, 1, 0, 10), "1", partition.region, "2", "0",
-             7520.3, 8000.0, 0.0, 7450.0, 7850.0, 0.0, -180.2),
-        ]
-        for row in sample_data:
-            yield row
+        # Build URL for NEMWEB data (provided)
+        date = datetime.strptime(partition.start_date, "%Y-%m-%d")
+        date_str = date.strftime("%Y%m%d")
+        url = f"https://www.nemweb.com.au/REPORTS/CURRENT/Dispatch_SCADA/PUBLIC_DISPATCHREGIONSUM_{date_str}.zip"
+
+        print(f"Fetching: {url}")
+
+        # TODO: Complete the implementation below
+        # The structure is provided - fill in the ... parts
+
+        try:
+            # Step 1: Fetch ZIP file from URL
+            # Hint: Use Request() with a User-Agent header, then urlopen() with timeout
+            request = Request(url, headers={"User-Agent": "DatabricksLab/1.0"})
+            # ... call urlopen(request, timeout=30) and read response into io.BytesIO()
+
+            # Step 2: Extract CSV from ZIP
+            # Hint: Use zipfile.ZipFile(zip_data) and iterate through zf.namelist()
+            rows = []
+            # with zipfile.ZipFile(zip_data) as zf:
+            #     for name in zf.namelist():
+            #         if name.endswith(".CSV") or name.endswith(".csv"):
+            #             # ... open file, wrap with TextIOWrapper, use csv.DictReader
+            #             pass
+
+            # Step 3: Filter by region and yield tuples
+            # Hint: Loop through rows, check if row["REGIONID"] matches partition.region
+            # for row in rows:
+            #     if row.get("REGIONID") == partition.region:
+            #         yield self._row_to_tuple(row)
+            pass
+
+        except HTTPError as e:
+            print(f"HTTP error {e.code} for {url}")
+            return
+
+    def _row_to_tuple(self, row: dict) -> Tuple:
+        """
+        Helper: Convert a CSV row dict to a tuple matching the schema.
+        Provided for you - use this in your read() implementation!
+        """
+        def parse_ts(val):
+            if not val:
+                return None
+            for fmt in ["%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"]:
+                try:
+                    return datetime.strptime(val, fmt)
+                except ValueError:
+                    continue
+            return None
+
+        def parse_float(val):
+            try:
+                return float(val) if val else None
+            except (ValueError, TypeError):
+                return None
+
+        return (
+            parse_ts(row.get("SETTLEMENTDATE")),
+            row.get("RUNNO"),
+            row.get("REGIONID"),
+            row.get("DISPATCHINTERVAL"),
+            row.get("INTERVENTION"),
+            parse_float(row.get("TOTALDEMAND")),
+            parse_float(row.get("AVAILABLEGENERATION")),
+            parse_float(row.get("AVAILABLELOAD")),
+            parse_float(row.get("DEMANDFORECAST")),
+            parse_float(row.get("DISPATCHABLEGENERATION")),
+            parse_float(row.get("DISPATCHABLELOAD")),
+            parse_float(row.get("NETINTERCHANGE")),
+        )
 
 
 # Test partition planning
@@ -271,19 +357,24 @@ class NemwebDataSource(DataSource):
     """
 
     # TODO 1.3: Implement these three methods
+    # Hint: Look at HelloWorldDataSource above for the pattern!
     # Docs: https://docs.databricks.com/en/pyspark/datasources.html#create-a-simple-data-source
 
     @classmethod
     def name(cls) -> str:
-        # Return the format name for spark.read.format("???")
+        """Return the format name used in spark.read.format("...")."""
+        # TODO 1.3a: Return "nemweb" so users can call spark.read.format("nemweb")
         pass
 
     def schema(self) -> StructType:
-        # Return the schema (use the function defined in Part 1)
+        """Return the schema for this data source."""
+        # TODO 1.3b: Call and return the get_dispatchregionsum_schema() function from Part 1
         pass
 
     def reader(self, schema: StructType) -> DataSourceReader:
-        # Return a NemwebReader with schema and self.options
+        """Create a reader for this data source."""
+        # TODO 1.3c: Return a new NemwebReader instance
+        # Hint: Pass 'schema' and 'self.options' to the NemwebReader constructor
         pass
 
 # COMMAND ----------
@@ -296,13 +387,19 @@ class NemwebDataSource(DataSource):
 # Register the data source with Spark
 spark.dataSource.register(NemwebDataSource)
 
-# Read data using your new format!
+# Use yesterday's date (guaranteed to exist in CURRENT folder)
+yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+# Read REAL data from NEMWEB API!
 df = (spark.read
       .format("nemweb")
-      .option("regions", "NSW1,VIC1")
+      .option("regions", "NSW1")  # Single region for speed
+      .option("start_date", yesterday)
+      .option("end_date", yesterday)
       .load())
 
-# Display results
+# Display results - this is LIVE data from the Australian electricity market!
+print(f"Row count: {df.count()} (expected: ~288 rows for 24hrs of 5-min intervals)")
 display(df)
 
 # COMMAND ----------
@@ -328,22 +425,22 @@ def validate_implementation():
         if field not in [f.name for f in schema.fields]:
             errors.append(f"Schema: missing {field}")
 
-    # Check partitions
+    # Check partitions (3 regions = 3 partitions for single day)
     reader = NemwebReader(schema, {"regions": "NSW1,VIC1,QLD1"})
     partitions = reader.partitions()
     if len(partitions) != 3:
         errors.append(f"Partitions: expected 3, got {len(partitions)}")
 
-    # Check data source
+    # Check data source name
     if NemwebDataSource.name() != "nemweb":
         errors.append(f"DataSource.name(): expected 'nemweb', got '{NemwebDataSource.name()}'")
 
     if errors:
-        print("❌ Issues found:")
+        print("Issues found:")
         for e in errors:
             print(f"   - {e}")
     else:
-        print("✅ All checks passed! Your data source is working.")
+        print("All checks passed! Your data source fetches REAL data from NEMWEB.")
 
     return len(errors) == 0
 
@@ -354,7 +451,7 @@ validate_implementation()
 # MAGIC %md
 # MAGIC ## Summary
 # MAGIC
-# MAGIC You've built a custom PySpark data source! The key components are:
+# MAGIC You've built a custom PySpark data source that fetches **live data** from NEMWEB!
 # MAGIC
 # MAGIC | Component | Purpose |
 # MAGIC |-----------|---------|
@@ -362,7 +459,7 @@ validate_implementation()
 # MAGIC | `DataSource.schema()` | Define output columns and types |
 # MAGIC | `DataSource.reader()` | Create reader with options |
 # MAGIC | `DataSourceReader.partitions()` | Plan parallel work units |
-# MAGIC | `DataSourceReader.read()` | Actually read data (runs on workers) |
+# MAGIC | `DataSourceReader.read()` | Fetch and parse data (runs on workers) |
 # MAGIC
 # MAGIC ## Learn More
 # MAGIC
