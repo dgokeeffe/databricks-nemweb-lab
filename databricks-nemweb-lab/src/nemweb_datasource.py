@@ -318,7 +318,17 @@ class NemwebDataSourceReader(DataSourceReader):
         Yields:
             Tuples matching the schema
         """
-        logger.debug(f"Reading partition: {partition.region} / {partition.date}")
+        from datetime import datetime as dt
+
+        # Debug log to file (visible on workers)
+        def _log(msg):
+            try:
+                with open("/tmp/nemweb_datasource_debug.log", "a") as f:
+                    f.write(f"{msg}\n")
+            except:
+                pass
+
+        _log(f"=== read() called for {partition.region}/{partition.date} ===")
 
         try:
             # Fetch single day of data for single region
@@ -329,10 +339,28 @@ class NemwebDataSourceReader(DataSourceReader):
                 end_date=partition.date  # Same date = single day
             )
 
+            _log(f"Fetched {len(raw_data)} raw rows")
+
+            row_count = 0
             for row in parse_nemweb_csv(raw_data, self.schema):
+                row_count += 1
+
+                # Validate first element (SETTLEMENTDATE) is datetime or None
+                if row[0] is not None:
+                    if not isinstance(row[0], dt):
+                        _log(f"ROW {row_count} INVALID: row[0] is {type(row[0]).__name__} = {repr(row[0])}")
+                        # Fix it by converting to None
+                        row = (None,) + row[1:]
+
+                if row_count <= 3:
+                    _log(f"Row {row_count}: type(row[0])={type(row[0]).__name__}")
+
                 yield row
 
+            _log(f"Yielded {row_count} rows total")
+
         except Exception as e:
+            _log(f"ERROR: {e}")
             logger.error(
                 f"Error reading partition {partition.partition_id} "
                 f"({partition.region}/{partition.date}): {e}"
