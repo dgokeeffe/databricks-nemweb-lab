@@ -413,20 +413,43 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
         yield tuple(values)
 
 
-def _convert_value(value: str, spark_type) -> any:
-    """Convert string value to appropriate Python type based on Spark type."""
+def _convert_value(value, spark_type):
+    """
+    Convert value to appropriate Python type based on Spark type.
+
+    IMPORTANT: For TimestampType, this MUST return either a datetime.datetime
+    object or None. Spark's Arrow serializer will fail with AssertionError
+    if any other type is returned.
+    """
     from pyspark.sql.types import StringType, DoubleType, IntegerType, TimestampType
 
+    # Handle None/empty values
     if value is None or value == "":
         return None
 
+    # Ensure we have a string to work with
+    if not isinstance(value, str):
+        value = str(value)
+
     if isinstance(spark_type, StringType):
         return str(value)
+
     elif isinstance(spark_type, DoubleType):
-        return float(value)
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            logger.warning(f"Could not convert to double: {value}")
+            return None
+
     elif isinstance(spark_type, IntegerType):
-        return int(float(value))
+        try:
+            return int(float(value))
+        except (ValueError, TypeError):
+            logger.warning(f"Could not convert to integer: {value}")
+            return None
+
     elif isinstance(spark_type, TimestampType):
+        # CRITICAL: Must return datetime.datetime or None - Spark requires this
         # NEMWEB timestamp formats (various formats observed in AEMO data)
         timestamp_formats = [
             "%Y/%m/%d %H:%M:%S",      # 2024/01/01 00:05:00
@@ -436,14 +459,21 @@ def _convert_value(value: str, spark_type) -> any:
             "%d/%m/%Y %H:%M:%S",      # 01/01/2024 00:05:00 (AU format)
             "%d/%m/%Y %H:%M",         # 01/01/2024 00:05 (AU format, no seconds)
         ]
+
+        # Try each format
         for fmt in timestamp_formats:
             try:
-                return datetime.strptime(value, fmt)
-            except ValueError:
+                result = datetime.strptime(value, fmt)
+                # Verify it's actually a datetime (defensive)
+                if isinstance(result, datetime):
+                    return result
+            except (ValueError, TypeError):
                 continue
-        # Return None if parsing fails - Spark requires datetime objects for TimestampType
-        logger.warning(f"Could not parse timestamp value: {value}")
+
+        # If we get here, no format worked - MUST return None
+        logger.warning(f"Could not parse timestamp value: {repr(value)}")
         return None
+
     else:
         return str(value)
 
