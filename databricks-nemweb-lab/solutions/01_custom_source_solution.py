@@ -4,6 +4,13 @@
 # MAGIC
 # MAGIC This notebook contains the complete solutions for Exercise 1.
 # MAGIC
+# MAGIC > **Note:** This is a **simplified educational version** for learning the Data Source API.
+# MAGIC > The production implementation in `src/nemweb_datasource.py` includes additional features:
+# MAGIC > - Fine-grained partitioning (region × date) for better parallelism
+# MAGIC > - Checkpoint-based resume for failed batch jobs
+# MAGIC > - Streaming support via `SimpleDataSourceStreamReader`
+# MAGIC > - Retry logic with exponential backoff (via `nemweb_utils.py`)
+# MAGIC
 # MAGIC ## Reference Documentation
 # MAGIC - [Python Data Source API Docs](https://docs.databricks.com/en/pyspark/datasources.html)
 # MAGIC - [Apache Spark Data Sources Tutorial](https://spark.apache.org/docs/latest/sql-data-sources-python.html)
