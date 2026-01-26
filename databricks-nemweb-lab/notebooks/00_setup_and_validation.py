@@ -88,17 +88,16 @@ except urllib.error.URLError as e:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 4. Lab Source Code Setup
+# MAGIC ## 4. Lab Source Code Installation
 # MAGIC
-# MAGIC Add the src folder to Python path so modules are importable.
+# MAGIC Install the nemweb-datasource package from the src folder.
 # MAGIC
 # MAGIC > **Reference:** [Importing workspace files](https://docs.databricks.com/aws/en/ldp/import-workspace-files)
 
 # COMMAND ----------
 
-# Compute the workspace path to src folder and add to sys.path
+# Compute the workspace path to src folder
 import os
-import sys
 
 # Get current notebook's workspace location
 notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
@@ -113,18 +112,19 @@ print(f"Source path: {src_path}")
 # Verify the path exists
 if os.path.exists(src_path):
     print(f"✓ Path exists")
-    # List contents to verify
-    print(f"  Contents: {os.listdir(src_path)}")
+    print(f"  Contents: {[f for f in os.listdir(src_path) if f.endswith('.py')]}")
 else:
     raise FileNotFoundError(f"Source path not found: {src_path}")
 
-# Add to sys.path
-if src_path not in sys.path:
-    sys.path.insert(0, src_path)
-    print(f"✓ Added to sys.path")
+# COMMAND ----------
 
-# Store path for later cells (survives across cells in same session)
-spark.conf.set("nemweb.src_path", src_path)
+# Install the package using pip
+%pip install $src_path -q
+
+# COMMAND ----------
+
+# Restart Python to pick up the installed package
+dbutils.library.restartPython()
 
 # COMMAND ----------
 
@@ -142,7 +142,7 @@ try:
 
 except ImportError as e:
     print(f"⚠ Could not import lab modules: {e}")
-    print("  Re-run cell 4 to add src to sys.path")
+    print("  Re-run section 4 to install the package")
 
 # COMMAND ----------
 
@@ -157,7 +157,7 @@ try:
     print("✓ NEMWEB custom data source registered")
 except ImportError as e:
     print(f"⚠ Could not register data source: {e}")
-    print("  Re-run cell 4 to add src to sys.path")
+    print("  Re-run section 4 to install the package")
 except Exception as e:
     print(f"⚠ Registration error: {e}")
     print("  You'll register it manually in exercise 01")

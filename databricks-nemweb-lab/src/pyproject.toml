@@ -16,6 +16,12 @@ local = [
     "requests>=2.28.0",
 ]
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["*"]
+# Use py_modules for flat layout (modules directly in src/)
+[tool.setuptools]
+py-modules = [
+    "nemweb_datasource",
+    "nemweb_utils",
+    "nemweb_sink",
+    "nemweb_local",
+    "local_spark_iceberg",
+]
