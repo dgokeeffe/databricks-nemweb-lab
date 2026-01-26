@@ -30,14 +30,19 @@ logger = logging.getLogger(__name__)
 NEMWEB_CURRENT_URL = "https://www.nemweb.com.au/REPORTS/CURRENT"
 NEMWEB_ARCHIVE_URL = "https://www.nemweb.com.au/REPORTS/ARCHIVE"
 
-# Mapping of MMS table names to NEMWEB folder paths
-TABLE_TO_FOLDER = {
-    "DISPATCHREGIONSUM": "Dispatch_SCADA",
-    "DISPATCHPRICE": "DispatchIS_Reports",
-    "TRADINGPRICE": "TradingIS_Reports",
-    "DISPATCH_UNIT_SCADA": "Dispatch_SCADA",
-    "ROOFTOP_PV_ACTUAL": "ROOFTOP_PV/ACTUAL",
+# Mapping of MMS table names to NEMWEB folder paths and file prefixes
+# The table name (e.g., DISPATCHREGIONSUM) is the data inside the CSV
+# The file prefix (e.g., DISPATCHSCADA) is what the ZIP file is named
+TABLE_CONFIG = {
+    "DISPATCHREGIONSUM": {"folder": "Dispatch_SCADA", "file_prefix": "DISPATCHSCADA"},
+    "DISPATCHPRICE": {"folder": "DispatchIS_Reports", "file_prefix": "DISPATCHIS"},
+    "TRADINGPRICE": {"folder": "TradingIS_Reports", "file_prefix": "TRADINGIS"},
+    "DISPATCH_UNIT_SCADA": {"folder": "Dispatch_SCADA", "file_prefix": "DISPATCHSCADA"},
+    "ROOFTOP_PV_ACTUAL": {"folder": "ROOFTOP_PV/ACTUAL", "file_prefix": "ROOFTOP_PV_ACTUAL"},
 }
+
+# Legacy mapping for backwards compatibility
+TABLE_TO_FOLDER = {k: v["folder"] for k, v in TABLE_CONFIG.items()}
 
 # Request timeout in seconds
 REQUEST_TIMEOUT = 30
@@ -130,10 +135,10 @@ def fetch_nemweb_data(
     if use_sample:
         return _get_sample_data(table, region)
 
-    if table not in TABLE_TO_FOLDER:
-        raise ValueError(f"Unsupported table: {table}. Supported: {list(TABLE_TO_FOLDER.keys())}")
+    if table not in TABLE_CONFIG:
+        raise ValueError(f"Unsupported table: {table}. Supported: {list(TABLE_CONFIG.keys())}")
 
-    folder = TABLE_TO_FOLDER[table]
+    config = TABLE_CONFIG[table]
     rows = []
 
     # Parse date range
@@ -143,7 +148,7 @@ def fetch_nemweb_data(
 
     while current <= end:
         try:
-            url = _build_nemweb_url(folder, table, current)
+            url = _build_nemweb_url(config["folder"], config["file_prefix"], current)
             data = _fetch_and_extract_zip(url)
 
             # Filter by region if specified
@@ -163,17 +168,18 @@ def fetch_nemweb_data(
     return rows
 
 
-def _build_nemweb_url(folder: str, table: str, date: datetime) -> str:
+def _build_nemweb_url(folder: str, file_prefix: str, date: datetime) -> str:
     """
-    Build NEMWEB URL for the specified folder, table, and date.
+    Build NEMWEB URL for the specified folder, file prefix, and date.
 
     Recent data (< 7 days) is in CURRENT, older data is in ARCHIVE.
+    Archive files are daily aggregates named PUBLIC_{prefix}_{YYYYMMDD}.zip
     """
     days_ago = (datetime.now() - date).days
 
     # NEMWEB file naming convention
     date_str = date.strftime("%Y%m%d")
-    filename = f"PUBLIC_{table}_{date_str}.zip"
+    filename = f"PUBLIC_{file_prefix}_{date_str}.zip"
 
     if days_ago < 7:
         return f"{NEMWEB_CURRENT_URL}/{folder}/{filename}"
