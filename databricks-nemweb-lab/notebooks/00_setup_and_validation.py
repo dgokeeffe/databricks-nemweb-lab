@@ -25,7 +25,8 @@
 
 # COMMAND ----------
 
-# Lab configuration - modify these if needed
+# Lab configuration - modify CATALOG if needed for your workspace
+# Common options: "main", "hive_metastore", or your personal catalog
 CATALOG = "main"
 SCHEMA = "nemweb_lab"
 RAW_TABLE = "nemweb_raw"

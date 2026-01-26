@@ -4,14 +4,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Educational 40-minute hands-on lab for experienced Databricks data engineers covering:
-1. Custom PySpark data sources using Python Data Source API (DBR 15.4+/Spark 4.0)
-2. Cluster right-sizing based on Spark UI metrics and DBU cost analysis
-3. Real-time dashboard development with Databricks Apps
+This repository contains two separate labs:
 
-The main project code lives in the `databricks-nemweb-lab/` subdirectory.
+**1. databricks-nemweb-lab/** - 40-minute hands-on lab for experienced Databricks data engineers:
+- Custom PySpark data sources using Python Data Source API (DBR 15.4+/Spark 4.0)
+- Cluster right-sizing based on Spark UI metrics and DBU cost analysis
+- Lakeflow Declarative Pipelines with bronze/silver/gold architecture
+- Real-time dashboard development with Databricks Apps
+
+**2. databricks-nemweb-anaylst-lab/** - 60-minute demo-only workshop for AGL Trading Analytics:
+- Genie (natural language queries) and AI/BI Assistant demonstrations
+- SQL metric views for semantic layer
+- Power BI integration examples
+- Excel/Power BI workflow mapping to Databricks
+
+Most code and development work occurs in `databricks-nemweb-lab/`.
 
 ## Common Commands
+
+### Setup and Installation
+```bash
+# Use Databricks virtual environment if available
+# The virtual env path is in: $DATABRICKS_VIRTUAL_ENV
+
+# Install root dependencies
+pip install -r requirements.txt
+
+# Install the nemweb_datasource package (for local development)
+cd databricks-nemweb-lab/src && pip install -e .
+
+# Or build as wheel
+cd databricks-nemweb-lab/src && python -m build
+```
 
 ### Running Tests
 ```bash
@@ -49,7 +73,13 @@ databricks bundle run nemweb_lab_workflow --target dev --var="environment=dev"
 # Run solutions workflow (instructor)
 databricks bundle run nemweb_lab_solutions --target dev --var="environment=dev"
 
-# Cleanup deployment
+# Run pipeline refresh job
+databricks bundle run nemweb_pipeline_job --target dev --var="environment=dev"
+
+# Cleanup deployment (interactive)
+./scripts/cleanup.sh
+
+# Or cleanup non-interactively
 databricks bundle destroy --target dev --var="environment=dev"
 ```
 
@@ -88,6 +118,11 @@ NEMWEB API (HTTP/ZIP/CSV) → Custom Datasource → Lakeflow Pipeline (DLT)
 - CSV parsing with type conversion
 - Schema definitions for NEMWEB tables
 
+**src/nemweb_ingest.py** - File download utilities:
+- Parallel file downloads to Unity Catalog Volumes
+- Manages CURRENT and ARCHIVE URL structures
+- Table-specific configurations (DISPATCHREGIONSUM, DISPATCHPRICE, etc.)
+
 **src/nemweb_sink.py** - Custom sinks:
 - `PriceAlertWriter` - Triggers alerts when prices exceed thresholds
 - `MetricsDataSource` - Publishes metrics to observability endpoints
@@ -105,11 +140,17 @@ NEMWEB API (HTTP/ZIP/CSV) → Custom Datasource → Lakeflow Pipeline (DLT)
 
 ### Directory Structure
 - `databricks-nemweb-lab/src/` - Core Python library (datasource, utils, sinks, pipeline)
+  - Packaged as `nemweb_datasource` (see `setup.py` and `pyproject.toml`)
+  - Installable via `pip install -e .` for local development
 - `databricks-nemweb-lab/notebooks/` - Lab exercises (00-04)
 - `databricks-nemweb-lab/solutions/` - Reference solutions (for instructors)
 - `databricks-nemweb-lab/app/` - Databricks App dashboard
 - `databricks-nemweb-lab/config/` - Cluster and pipeline JSON templates
 - `databricks-nemweb-lab/docs/` - Lab documentation and guides
+- `databricks-nemweb-lab/data/` - Static data files (NEM station registry, DUID mappings)
+- `databricks-nemweb-anaylst-lab/` - Separate analyst/demo lab (SQL-focused)
+- `scripts/` - Helper scripts (cleanup.sh)
+- `.github/workflows/` - CI/CD workflows (databricks-ci.yml)
 
 ## NEMWEB Data Source
 
@@ -146,3 +187,20 @@ NEMWEB API (HTTP/ZIP/CSV) → Custom Datasource → Lakeflow Pipeline (DLT)
 - Use `nemweb_local.py` with DuckDB for quick iteration (no Spark required)
 - Use `local_spark_iceberg.py` for Spark + Iceberg testing (limited - no DataSource API)
 - Full DataSource API testing requires Databricks Serverless or DBR 15.4+ cluster
+- When working in Databricks environment, use the virtual env at `$DATABRICKS_VIRTUAL_ENV`
+
+## CI/CD
+
+The repository includes GitHub Actions workflow (`.github/workflows/databricks-ci.yml`):
+- Validates and deploys bundles on PR and main branch pushes
+- Creates/reuses serverless SQL warehouse for testing
+- Runs `demo_workflow` job and cleans up after
+- Requires `DEPLOY_NOTEBOOK_TOKEN` secret configured in GitHub
+
+## Package Management
+
+The `src/` directory is configured as a Python package:
+- `setup.py` - Package metadata for pip install
+- `pyproject.toml` - Modern Python packaging with UV lock file
+- `uv.lock` - Dependency lock file (managed by uv tool)
+- Both package and standalone imports supported in notebooks

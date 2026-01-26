@@ -696,6 +696,14 @@ class NemwebVolumeReader(DataSourceReader):
             if self.regions:
                 rows = [r for r in rows if r.get("REGIONID") in self.regions]
 
+            # Identify timestamp column indices for validation
+            from pyspark.sql.types import TimestampType
+            from datetime import datetime as dt
+            timestamp_indices = [
+                idx for idx, field in enumerate(self.schema.fields)
+                if isinstance(field.dataType, TimestampType)
+            ]
+
             # Convert to tuples matching schema
             for row in rows:
                 try:
@@ -704,6 +712,14 @@ class NemwebVolumeReader(DataSourceReader):
                         raw_val = row.get(field.name)
                         converted = self._convert_value(raw_val, field.dataType)
                         values.append(converted)
+
+                    # FINAL VALIDATION: Ensure timestamp columns are datetime or None
+                    # Spark's Arrow serializer will crash with AssertionError otherwise
+                    for ts_idx in timestamp_indices:
+                        val = values[ts_idx]
+                        if val is not None and not isinstance(val, dt):
+                            values[ts_idx] = None  # Force invalid timestamps to None
+
                     yield tuple(values)
                 except Exception as e:
                     logger.warning(f"Skipping row: {e}")
@@ -749,7 +765,11 @@ class NemwebVolumeReader(DataSourceReader):
         return rows
 
     def _convert_value(self, value, spark_type):
-        """Convert string value to appropriate Python type."""
+        """Convert string value to appropriate Python type.
+
+        IMPORTANT: For TimestampType, this MUST return either datetime.datetime
+        or None. Spark's Arrow serializer will fail with AssertionError otherwise.
+        """
         from pyspark.sql.types import StringType, DoubleType, IntegerType, TimestampType
         from datetime import datetime as dt
 
@@ -776,16 +796,27 @@ class NemwebVolumeReader(DataSourceReader):
                 return None
 
         elif isinstance(spark_type, TimestampType):
-            for fmt in ["%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S",
-                       "%Y/%m/%d %H:%M", "%Y-%m-%d %H:%M"]:
+            # NEMWEB timestamp formats - must return datetime or None
+            formats = [
+                "%Y/%m/%d %H:%M:%S",      # 2024/01/01 00:05:00
+                "%Y-%m-%d %H:%M:%S",      # 2024-01-01 00:05:00
+                "%Y/%m/%d %H:%M",         # 2024/01/01 00:05 (no seconds)
+                "%Y-%m-%d %H:%M",         # 2024-01-01 00:05 (no seconds)
+                "%d/%m/%Y %H:%M:%S",      # 01/01/2024 00:05:00 (AU format)
+                "%d/%m/%Y %H:%M",         # 01/01/2024 00:05 (AU format)
+            ]
+            for fmt in formats:
                 try:
                     result = dt.strptime(str_val, fmt)
-                    if type(result).__name__ == 'datetime':
+                    # Final type check - must be datetime
+                    if isinstance(result, dt):
                         return result
                 except (ValueError, TypeError):
                     continue
+            # Return None if no format matched - never return string for timestamp
             return None
 
+        # Default: return as string (for any unrecognized types)
         return str_val
 
 
