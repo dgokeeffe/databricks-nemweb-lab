@@ -5,19 +5,31 @@ This module implements a custom data source using PyArrow RecordBatch
 for zero-copy transfer to Spark. This avoids Python datetime serialization
 issues that occur with Spark Connect (Serverless).
 
-Supports both HTTP fetching and reading from UC Volume.
+Supports three modes:
+1. Volume mode: Read from pre-downloaded files in UC Volume (fastest)
+2. Auto-download mode: Download to volume first, then read (recommended)
+3. HTTP mode: Fetch directly via HTTP (for development/small date ranges)
 
 Usage:
     # Register the data source
     spark.dataSource.register(NemwebArrowDataSource)
 
-    # Read from pre-downloaded files (recommended for production)
+    # Auto-download to Volume then read (recommended for production)
+    df = (spark.read.format("nemweb_arrow")
+          .option("volume_path", "/Volumes/main/nemweb/raw")
+          .option("table", "DISPATCHREGIONSUM")
+          .option("start_date", "2024-07-01")
+          .option("end_date", "2024-12-31")
+          .option("auto_download", "true")
+          .load())
+
+    # Read from pre-downloaded files (if already downloaded)
     df = (spark.read.format("nemweb_arrow")
           .option("volume_path", "/Volumes/main/nemweb/raw")
           .option("table", "DISPATCHREGIONSUM")
           .load())
 
-    # Read via HTTP (for development/testing)
+    # Read via HTTP directly (for development/testing)
     df = (spark.read.format("nemweb_arrow")
           .option("table", "DISPATCHREGIONSUM")
           .option("start_date", "2024-01-01")
@@ -96,6 +108,12 @@ SCHEMAS = {
 NEMWEB_CURRENT_URL = "https://www.nemweb.com.au/REPORTS/CURRENT"
 NEMWEB_ARCHIVE_URL = "https://www.nemweb.com.au/REPORTS/ARCHIVE"
 
+# Download configuration
+REQUEST_TIMEOUT = 60
+USER_AGENT = "DatabricksNemwebLab/2.0"
+MAX_RETRIES = 3
+RETRY_BASE_DELAY = 1.0
+
 TABLE_TO_FOLDER = {
     "DISPATCHREGIONSUM": ("DispatchIS_Reports", "DISPATCHIS"),
     "DISPATCHPRICE": ("DispatchIS_Reports", "DISPATCHIS"),
@@ -132,6 +150,10 @@ class NemwebArrowReader(DataSourceReader):
 
     This bypasses Python datetime serialization issues by using Arrow's
     native timestamp handling for zero-copy transfer to Spark.
+
+    Supports auto-download mode where files are downloaded to a UC Volume
+    before reading. Downloads run on the driver using ThreadPoolExecutor
+    for parallelism, then reading happens distributed across Spark workers.
     """
 
     def __init__(self, schema: StructType, options: dict):
@@ -143,9 +165,17 @@ class NemwebArrowReader(DataSourceReader):
         self.start_date = options.get("start_date", "2024-01-01")
         self.end_date = options.get("end_date", "2024-01-07")
 
+        # Download options
+        self.auto_download = options.get("auto_download", "false").lower() == "true"
+        self.max_workers = int(options.get("max_workers", "8"))
+        self.skip_existing = options.get("skip_existing", "true").lower() == "true"
+
     def partitions(self) -> list[InputPartition]:
-        """Create partitions based on mode (volume or HTTP)."""
+        """Create partitions based on mode (volume, auto-download, or HTTP)."""
         if self.volume_path:
+            # Auto-download files to volume if enabled
+            if self.auto_download:
+                self._download_to_volume()
             return self._volume_partitions()
         else:
             return self._http_partitions()
@@ -192,6 +222,154 @@ class NemwebArrowReader(DataSourceReader):
 
         logger.info(f"Created {len(partitions)} HTTP partitions")
         return partitions
+
+    def _download_to_volume(self) -> None:
+        """
+        Download NEMWEB files to UC Volume in parallel.
+
+        Runs on the driver using ThreadPoolExecutor. Downloads are skipped
+        for files that already exist when skip_existing is True.
+        """
+        import os
+        import time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        folder, file_prefix = TABLE_TO_FOLDER.get(
+            self.table, ("DispatchIS_Reports", "DISPATCHIS")
+        )
+
+        # Create volume subdirectory for this table
+        table_path = os.path.join(self.volume_path, self.table.lower())
+        os.makedirs(table_path, exist_ok=True)
+
+        # Generate download tasks for date range
+        start = datetime.strptime(self.start_date, "%Y-%m-%d")
+        end = datetime.strptime(self.end_date, "%Y-%m-%d")
+
+        tasks = []
+        current = start
+        while current <= end:
+            date_str = current.strftime("%Y%m%d")
+            filename = f"PUBLIC_{file_prefix}_{date_str}.zip"
+            dest_path = os.path.join(table_path, filename)
+
+            if self.skip_existing and os.path.exists(dest_path):
+                tasks.append({
+                    "date": current,
+                    "url": None,
+                    "dest_path": dest_path,
+                    "skip": True
+                })
+            else:
+                url = self._build_download_url(folder, file_prefix, current)
+                tasks.append({
+                    "date": current,
+                    "url": url,
+                    "dest_path": dest_path,
+                    "skip": False
+                })
+
+            current += timedelta(days=1)
+
+        to_download = [t for t in tasks if not t["skip"]]
+        skipped = len([t for t in tasks if t["skip"]])
+
+        logger.info(
+            f"NEMWEB Download: {len(tasks)} days, "
+            f"{len(to_download)} to download, {skipped} existing"
+        )
+
+        if not to_download:
+            return
+
+        # Download files in parallel
+        results = {"success": 0, "failed": 0, "not_found": 0}
+
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_to_task = {
+                executor.submit(
+                    self._download_single_file,
+                    task["url"],
+                    task["dest_path"]
+                ): task
+                for task in to_download
+            }
+
+            for future in as_completed(future_to_task):
+                result = future.result()
+                if result["success"]:
+                    results["success"] += 1
+                elif result.get("error") == "not_found":
+                    results["not_found"] += 1
+                else:
+                    results["failed"] += 1
+
+        logger.info(
+            f"Download complete: {results['success']} successful, "
+            f"{results['not_found']} not found, {results['failed']} failed"
+        )
+
+    def _download_single_file(self, url: str, dest_path: str) -> dict:
+        """Download a single file with retry logic."""
+        import time
+        from urllib.request import urlopen, Request
+        from urllib.error import HTTPError, URLError
+
+        last_error = None
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                request = Request(url, headers={"User-Agent": USER_AGENT})
+                with urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+                    data = response.read()
+
+                with open(dest_path, 'wb') as f:
+                    f.write(data)
+
+                return {
+                    "success": True,
+                    "url": url,
+                    "path": dest_path,
+                    "size": len(data),
+                    "error": None
+                }
+
+            except HTTPError as e:
+                if e.code == 404:
+                    return {
+                        "success": False,
+                        "url": url,
+                        "path": dest_path,
+                        "size": 0,
+                        "error": "not_found"
+                    }
+                last_error = str(e)
+
+            except (URLError, TimeoutError) as e:
+                last_error = str(e)
+
+            if attempt < MAX_RETRIES - 1:
+                delay = RETRY_BASE_DELAY * (2 ** attempt)
+                time.sleep(delay)
+
+        return {
+            "success": False,
+            "url": url,
+            "path": dest_path,
+            "size": 0,
+            "error": last_error
+        }
+
+    def _build_download_url(self, folder: str, file_prefix: str, date: datetime) -> str:
+        """Build NEMWEB URL for downloading a file."""
+        days_ago = (datetime.now() - date).days
+        date_str = date.strftime("%Y%m%d")
+        filename = f"PUBLIC_{file_prefix}_{date_str}.zip"
+
+        if days_ago < 7:
+            return f"{NEMWEB_CURRENT_URL}/{folder}/{filename}"
+        else:
+            return f"{NEMWEB_ARCHIVE_URL}/{folder}/{filename}"
 
     def read(self, partition: NemwebArrowPartition) -> Iterator:
         """
@@ -447,13 +625,22 @@ class NemwebArrowDataSource(DataSource):
     Usage:
         spark.dataSource.register(NemwebArrowDataSource)
 
-        # Read from Volume (recommended for production)
+        # Auto-download to Volume then read (recommended)
+        df = (spark.read.format("nemweb_arrow")
+              .option("volume_path", "/Volumes/main/nemweb/raw")
+              .option("table", "DISPATCHREGIONSUM")
+              .option("start_date", "2024-07-01")
+              .option("end_date", "2024-12-31")
+              .option("auto_download", "true")
+              .load())
+
+        # Read from Volume (if files already downloaded)
         df = (spark.read.format("nemweb_arrow")
               .option("volume_path", "/Volumes/main/nemweb/raw")
               .option("table", "DISPATCHREGIONSUM")
               .load())
 
-        # Read via HTTP (for development/testing)
+        # Read via HTTP directly (for development/testing)
         df = (spark.read.format("nemweb_arrow")
               .option("table", "DISPATCHPRICE")
               .option("start_date", "2024-01-01")
@@ -462,11 +649,14 @@ class NemwebArrowDataSource(DataSource):
               .load())
 
     Options:
-        volume_path: Path to UC Volume with downloaded files (preferred)
+        volume_path: Path to UC Volume for storing/reading files
         table: MMS table name (DISPATCHREGIONSUM, DISPATCHPRICE, TRADINGPRICE)
         regions: Comma-separated region IDs (default: all 5 NEM regions)
-        start_date: Start date YYYY-MM-DD (HTTP mode)
-        end_date: End date YYYY-MM-DD (HTTP mode)
+        start_date: Start date YYYY-MM-DD
+        end_date: End date YYYY-MM-DD
+        auto_download: If "true", download files to volume before reading (default: false)
+        max_workers: Number of parallel download threads (default: 8)
+        skip_existing: If "true", skip downloading files that exist (default: true)
     """
 
     @classmethod

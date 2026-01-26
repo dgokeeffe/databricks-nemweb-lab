@@ -566,5 +566,296 @@ class TestHTTPIntegration:
         assert results == []
 
 
+class TestDownloadOptions:
+    """Tests for auto-download configuration options."""
+
+    def test_auto_download_default_false(self):
+        """auto_download should default to False."""
+        schema = StructType([StructField("REGIONID", StringType(), True)])
+        options = {"table": "DISPATCHREGIONSUM"}
+        reader = NemwebArrowReader(schema, options)
+
+        assert reader.auto_download is False
+
+    def test_auto_download_enabled(self):
+        """auto_download=true should enable downloading."""
+        schema = StructType([StructField("REGIONID", StringType(), True)])
+        options = {"table": "DISPATCHREGIONSUM", "auto_download": "true"}
+        reader = NemwebArrowReader(schema, options)
+
+        assert reader.auto_download is True
+
+    def test_auto_download_case_insensitive(self):
+        """auto_download should be case-insensitive."""
+        schema = StructType([StructField("REGIONID", StringType(), True)])
+
+        for value in ["True", "TRUE", "true", "TrUe"]:
+            options = {"table": "DISPATCHREGIONSUM", "auto_download": value}
+            reader = NemwebArrowReader(schema, options)
+            assert reader.auto_download is True
+
+    def test_max_workers_default(self):
+        """max_workers should default to 8."""
+        schema = StructType([StructField("REGIONID", StringType(), True)])
+        options = {"table": "DISPATCHREGIONSUM"}
+        reader = NemwebArrowReader(schema, options)
+
+        assert reader.max_workers == 8
+
+    def test_max_workers_custom(self):
+        """max_workers can be customized."""
+        schema = StructType([StructField("REGIONID", StringType(), True)])
+        options = {"table": "DISPATCHREGIONSUM", "max_workers": "4"}
+        reader = NemwebArrowReader(schema, options)
+
+        assert reader.max_workers == 4
+
+    def test_skip_existing_default_true(self):
+        """skip_existing should default to True."""
+        schema = StructType([StructField("REGIONID", StringType(), True)])
+        options = {"table": "DISPATCHREGIONSUM"}
+        reader = NemwebArrowReader(schema, options)
+
+        assert reader.skip_existing is True
+
+    def test_skip_existing_disabled(self):
+        """skip_existing=false should disable skipping."""
+        schema = StructType([StructField("REGIONID", StringType(), True)])
+        options = {"table": "DISPATCHREGIONSUM", "skip_existing": "false"}
+        reader = NemwebArrowReader(schema, options)
+
+        assert reader.skip_existing is False
+
+
+class TestBuildDownloadUrl:
+    """Tests for _build_download_url method."""
+
+    def get_reader(self):
+        """Get a reader instance for testing."""
+        schema = StructType([StructField("REGIONID", StringType(), True)])
+        return NemwebArrowReader(schema, {})
+
+    def test_recent_date_uses_current_url(self):
+        """Dates within 7 days should use CURRENT URL."""
+        reader = self.get_reader()
+        # Use yesterday's date (always recent)
+        recent_date = datetime.now() - timedelta(days=1)
+
+        url = reader._build_download_url("DispatchIS_Reports", "DISPATCHIS", recent_date)
+
+        assert "CURRENT" in url
+        assert "DispatchIS_Reports" in url
+
+    def test_old_date_uses_archive_url(self):
+        """Dates older than 7 days should use ARCHIVE URL."""
+        reader = self.get_reader()
+        old_date = datetime.now() - timedelta(days=30)
+
+        url = reader._build_download_url("DispatchIS_Reports", "DISPATCHIS", old_date)
+
+        assert "ARCHIVE" in url
+        assert "DispatchIS_Reports" in url
+
+    def test_url_format(self):
+        """URL should have correct format."""
+        reader = self.get_reader()
+        test_date = datetime(2024, 6, 15)
+
+        url = reader._build_download_url("DispatchIS_Reports", "DISPATCHIS", test_date)
+
+        assert "PUBLIC_DISPATCHIS_20240615.zip" in url
+
+
+class TestDownloadSingleFile:
+    """Tests for _download_single_file method."""
+
+    def get_reader(self):
+        """Get a reader instance for testing."""
+        schema = StructType([StructField("REGIONID", StringType(), True)])
+        return NemwebArrowReader(schema, {})
+
+    def test_successful_download(self):
+        """Should return success dict on successful download."""
+        import tempfile
+        import os
+
+        reader = self.get_reader()
+
+        # Create mock response
+        mock_response = MagicMock()
+        mock_response.read.return_value = b"test data content"
+        mock_response.__enter__ = lambda s: mock_response
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest_path = os.path.join(tmpdir, "test.zip")
+
+            with patch("urllib.request.urlopen", return_value=mock_response):
+                result = reader._download_single_file("http://example.com/test.zip", dest_path)
+
+            assert result["success"] is True
+            assert result["size"] == len(b"test data content")
+            assert result["error"] is None
+            assert os.path.exists(dest_path)
+
+    def test_404_returns_not_found(self):
+        """Should return not_found error on 404."""
+        import tempfile
+        import os
+        from urllib.error import HTTPError
+
+        reader = self.get_reader()
+        error = HTTPError("http://example.com", 404, "Not Found", {}, None)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest_path = os.path.join(tmpdir, "test.zip")
+
+            with patch("urllib.request.urlopen", side_effect=error):
+                result = reader._download_single_file("http://example.com/test.zip", dest_path)
+
+            assert result["success"] is False
+            assert result["error"] == "not_found"
+
+    def test_timeout_retries(self):
+        """Should retry on timeout errors."""
+        import tempfile
+        import os
+        from urllib.error import URLError
+
+        reader = self.get_reader()
+        error = URLError("Connection timed out")
+
+        call_count = 0
+
+        def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise error
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest_path = os.path.join(tmpdir, "test.zip")
+
+            with patch("urllib.request.urlopen", side_effect=side_effect):
+                with patch("time.sleep"):  # Skip actual sleep
+                    result = reader._download_single_file("http://example.com/test.zip", dest_path)
+
+            # Should have retried MAX_RETRIES times (3 by default)
+            assert call_count == 3
+            assert result["success"] is False
+
+
+class TestDownloadToVolume:
+    """Tests for _download_to_volume method."""
+
+    def get_reader(self, volume_path, start_date="2024-01-01", end_date="2024-01-03"):
+        """Get a reader instance with volume path."""
+        schema = StructType([StructField("REGIONID", StringType(), True)])
+        options = {
+            "table": "DISPATCHREGIONSUM",
+            "volume_path": volume_path,
+            "start_date": start_date,
+            "end_date": end_date,
+            "auto_download": "true",
+            "max_workers": "2"
+        }
+        return NemwebArrowReader(schema, options)
+
+    def test_creates_table_subdirectory(self):
+        """Should create table subdirectory in volume."""
+        import tempfile
+        import os
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            reader = self.get_reader(tmpdir)
+
+            # Mock the download to avoid actual HTTP calls
+            with patch.object(reader, "_download_single_file") as mock_download:
+                mock_download.return_value = {"success": True, "error": None}
+                reader._download_to_volume()
+
+            # Should have created dispatchregionsum subdirectory
+            table_path = os.path.join(tmpdir, "dispatchregionsum")
+            assert os.path.exists(table_path)
+            assert os.path.isdir(table_path)
+
+    def test_skips_existing_files(self):
+        """Should skip existing files when skip_existing is True."""
+        import tempfile
+        import os
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            reader = self.get_reader(tmpdir, "2024-01-01", "2024-01-01")
+
+            # Create table directory and a file
+            table_path = os.path.join(tmpdir, "dispatchregionsum")
+            os.makedirs(table_path)
+            existing_file = os.path.join(table_path, "PUBLIC_DISPATCHIS_20240101.zip")
+            with open(existing_file, 'wb') as f:
+                f.write(b"existing data")
+
+            with patch.object(reader, "_download_single_file") as mock_download:
+                reader._download_to_volume()
+
+            # Should not have called download for existing file
+            mock_download.assert_not_called()
+
+    def test_downloads_missing_files(self):
+        """Should download files that don't exist."""
+        import tempfile
+        import os
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            reader = self.get_reader(tmpdir, "2024-01-01", "2024-01-02")
+
+            with patch.object(reader, "_download_single_file") as mock_download:
+                mock_download.return_value = {"success": True, "error": None}
+                reader._download_to_volume()
+
+            # Should have called download twice (two days)
+            assert mock_download.call_count == 2
+
+
+class TestPartitionsWithAutoDownload:
+    """Tests for partitions() method with auto_download enabled."""
+
+    def test_partitions_triggers_download_when_enabled(self):
+        """partitions() should trigger download when auto_download is true."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema = StructType([StructField("REGIONID", StringType(), True)])
+            options = {
+                "table": "DISPATCHREGIONSUM",
+                "volume_path": tmpdir,
+                "start_date": "2024-01-01",
+                "end_date": "2024-01-01",
+                "auto_download": "true"
+            }
+            reader = NemwebArrowReader(schema, options)
+
+            with patch.object(reader, "_download_to_volume") as mock_download:
+                reader.partitions()
+
+            mock_download.assert_called_once()
+
+    def test_partitions_skips_download_when_disabled(self):
+        """partitions() should not download when auto_download is false."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema = StructType([StructField("REGIONID", StringType(), True)])
+            options = {
+                "table": "DISPATCHREGIONSUM",
+                "volume_path": tmpdir,
+                "auto_download": "false"
+            }
+            reader = NemwebArrowReader(schema, options)
+
+            with patch.object(reader, "_download_to_volume") as mock_download:
+                reader.partitions()
+
+            mock_download.assert_not_called()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
