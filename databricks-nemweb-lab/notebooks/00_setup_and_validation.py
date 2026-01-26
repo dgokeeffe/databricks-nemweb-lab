@@ -233,7 +233,11 @@ print("=" * 60)
 # MAGIC # Data Pre-Loading for Optimization Exercise
 # MAGIC
 # MAGIC The following section pre-loads NEMWEB data into a Delta table for use in Exercise 03 (Optimization Comparison).
-# MAGIC This avoids slow HTTP fetching during the interactive exercise.
+# MAGIC
+# MAGIC **Architecture:**
+# MAGIC 1. Download ZIP files from NEMWEB to UC Volume (parallel, on driver)
+# MAGIC 2. Read from Volume using custom data source (parallel, on workers)
+# MAGIC 3. Write to Delta table
 # MAGIC
 # MAGIC **Run this section once before the workshop to prepare the data.**
 
@@ -248,9 +252,12 @@ print("=" * 60)
 CATALOG = "main"
 SCHEMA = "nemweb_lab"
 RAW_TABLE = "nemweb_raw"
+VOLUME_NAME = "raw_files"
+
+# UC Volume path for raw files
+VOLUME_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}"
 
 # Data range - uses last 6 months from today
-# More data = better optimization comparison, but longer load time
 from datetime import datetime, timedelta
 
 # End date is yesterday (today's data may be incomplete)
@@ -261,20 +268,23 @@ START_DATE = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
 REGIONS = "NSW1,QLD1,SA1,VIC1,TAS1"
 
 print(f"Target table: {CATALOG}.{SCHEMA}.{RAW_TABLE}")
+print(f"Volume path: {VOLUME_PATH}")
 print(f"Date range: {START_DATE} to {END_DATE}")
 print(f"Regions: {REGIONS}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Create Schema
+# MAGIC ## Create Schema and Volume
 
 # COMMAND ----------
 
 spark.sql(f"CREATE CATALOG IF NOT EXISTS {CATALOG}")
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
+spark.sql(f"CREATE VOLUME IF NOT EXISTS {CATALOG}.{SCHEMA}.{VOLUME_NAME}")
 spark.sql(f"USE {CATALOG}.{SCHEMA}")
 print(f"✓ Using schema: {CATALOG}.{SCHEMA}")
+print(f"✓ Volume ready: {VOLUME_PATH}")
 
 # COMMAND ----------
 
@@ -297,36 +307,61 @@ else:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Load NEMWEB Data Using Custom Data Source
+# MAGIC ## Step 1: Download NEMWEB Files to UC Volume
 # MAGIC
-# MAGIC This fetches data from NEMWEB and stores it in a Delta table.
-# MAGIC Takes ~3-10 minutes depending on date range and network speed.
+# MAGIC Downloads ZIP files in parallel (8 threads) to the UC Volume.
+# MAGIC This runs on the driver and handles all HTTP complexity.
 
 # COMMAND ----------
 
 if FORCE_RELOAD or not table_exists:
-    print("Loading NEMWEB data...")
-    print(f"This may take several minutes for {START_DATE} to {END_DATE}")
+    from nemweb_ingest import download_nemweb_files
+
+    print("Step 1: Downloading NEMWEB files to UC Volume...")
     print("-" * 50)
 
+    download_results = download_nemweb_files(
+        volume_path=VOLUME_PATH,
+        table="DISPATCHREGIONSUM",
+        start_date=START_DATE,
+        end_date=END_DATE,
+        max_workers=8,
+        skip_existing=True
+    )
+else:
+    print("✓ Skipping download - using existing data")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Step 2: Read from Volume Using Custom Data Source
+# MAGIC
+# MAGIC The custom data source reads from local Volume files (no HTTP on workers).
+# MAGIC Each ZIP file becomes a partition for parallel processing.
+
+# COMMAND ----------
+
+if FORCE_RELOAD or not table_exists:
     import time
     start_time = time.time()
 
-    # Ensure data source is registered
+    print("Step 2: Reading from Volume using custom data source...")
+    print("-" * 50)
+
+    # Register data source
     try:
         from nemweb_datasource import NemwebDataSource
         spark.dataSource.register(NemwebDataSource)
     except:
         pass  # Already registered
 
-    # Fetch data using custom data source
+    # Read from Volume (not HTTP!)
     nemweb_df = (
         spark.read
         .format("nemweb")
+        .option("volume_path", VOLUME_PATH)
         .option("table", "DISPATCHREGIONSUM")
         .option("regions", REGIONS)
-        .option("start_date", START_DATE)
-        .option("end_date", END_DATE)
         .load()
     )
 

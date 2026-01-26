@@ -47,8 +47,10 @@ import logging
 # Support both package and standalone imports
 try:
     from .nemweb_utils import fetch_nemweb_data, parse_nemweb_csv, get_nemweb_schema
+    from .nemweb_ingest import list_downloaded_files
 except ImportError:
     from nemweb_utils import fetch_nemweb_data, parse_nemweb_csv, get_nemweb_schema
+    from nemweb_ingest import list_downloaded_files
 
 logger = logging.getLogger(__name__)
 
@@ -594,21 +596,219 @@ class NemwebStreamReader(SimpleDataSourceStreamReader):
         self._save_progress(offset_timestamp)
 
 
+class NemwebFilePartition(InputPartition):
+    """
+    Partition representing a single ZIP file from UC Volume.
+
+    Each partition corresponds to one day's data file.
+    """
+
+    def __init__(self, file_path: str, table: str):
+        self.file_path = file_path
+        self.table = table
+        self.partition_id = hashlib.md5(file_path.encode()).hexdigest()[:12]
+
+
+class NemwebVolumeReader(DataSourceReader):
+    """
+    Reader that reads NEMWEB data from pre-downloaded files in UC Volume.
+
+    This is the recommended approach for production:
+    1. Download files to UC Volume using nemweb_ingest.download_nemweb_files()
+    2. Read from Volume using this reader (avoids HTTP issues in Spark jobs)
+
+    Options:
+        volume_path: Path to UC Volume containing downloaded files
+        table: MMS table name (default: DISPATCHREGIONSUM)
+        regions: Optional comma-separated region filter
+    """
+
+    def __init__(self, schema: StructType, options: dict):
+        self.schema = schema
+        self.options = options
+        self.volume_path = options.get("volume_path")
+        self.table = options.get("table", "DISPATCHREGIONSUM")
+        self.regions = options.get("regions", "").split(",") if options.get("regions") else None
+
+    def partitions(self) -> list[InputPartition]:
+        """Create one partition per ZIP file."""
+        import os
+
+        table_path = os.path.join(self.volume_path, self.table.lower())
+
+        if not os.path.exists(table_path):
+            logger.warning(f"Volume path does not exist: {table_path}")
+            return []
+
+        files = sorted([
+            os.path.join(table_path, f)
+            for f in os.listdir(table_path)
+            if f.endswith('.zip')
+        ])
+
+        logger.info(f"Found {len(files)} ZIP files in {table_path}")
+
+        return [NemwebFilePartition(f, self.table) for f in files]
+
+    def read(self, partition: NemwebFilePartition) -> Iterator[Tuple]:
+        """
+        Read and parse a single ZIP file.
+
+        This runs on Spark executors - reads from local Volume path.
+        """
+        import zipfile
+        import io
+        import csv
+        from datetime import datetime as dt
+
+        # Table config for record type filtering
+        TABLE_CONFIG = {
+            "DISPATCHREGIONSUM": "DISPATCH,REGIONSUM",
+            "DISPATCHPRICE": "DISPATCH,PRICE",
+            "TRADINGPRICE": "TRADING,PRICE",
+        }
+
+        record_type = TABLE_CONFIG.get(partition.table)
+
+        try:
+            with open(partition.file_path, 'rb') as f:
+                zip_data = io.BytesIO(f.read())
+
+            rows = []
+            with zipfile.ZipFile(zip_data) as zf:
+                for name in zf.namelist():
+                    # Handle nested ZIPs (archive files)
+                    if name.endswith(".zip") or name.endswith(".ZIP"):
+                        with zf.open(name) as nested_zip_file:
+                            nested_data = io.BytesIO(nested_zip_file.read())
+                            with zipfile.ZipFile(nested_data) as nested_zf:
+                                for nested_name in nested_zf.namelist():
+                                    if nested_name.upper().endswith(".CSV"):
+                                        with nested_zf.open(nested_name) as csv_file:
+                                            rows.extend(self._parse_csv(csv_file, record_type))
+
+                    # Direct CSV files
+                    elif name.upper().endswith(".CSV"):
+                        with zf.open(name) as csv_file:
+                            rows.extend(self._parse_csv(csv_file, record_type))
+
+            # Filter by regions if specified
+            if self.regions:
+                rows = [r for r in rows if r.get("REGIONID") in self.regions]
+
+            # Convert to tuples matching schema
+            for row in rows:
+                try:
+                    values = []
+                    for field in self.schema.fields:
+                        raw_val = row.get(field.name)
+                        converted = self._convert_value(raw_val, field.dataType)
+                        values.append(converted)
+                    yield tuple(values)
+                except Exception as e:
+                    logger.warning(f"Skipping row: {e}")
+                    continue
+
+        except Exception as e:
+            logger.error(f"Error reading {partition.file_path}: {e}")
+            raise
+
+    def _parse_csv(self, csv_file, record_type: str) -> list[dict]:
+        """Parse NEMWEB multi-record CSV format."""
+        text = csv_file.read().decode("utf-8")
+
+        if not record_type:
+            reader = csv.DictReader(io.StringIO(text))
+            return list(reader)
+
+        rows = []
+        headers = None
+        reader = csv.reader(io.StringIO(text))
+
+        for parts in reader:
+            if not parts:
+                continue
+
+            row_type = parts[0].strip().upper()
+
+            if row_type == "I" and len(parts) > 2:
+                row_record = f"{parts[1]},{parts[2]}"
+                if row_record == record_type:
+                    headers = parts[4:]
+
+            elif row_type == "D" and headers and len(parts) > 2:
+                row_record = f"{parts[1]},{parts[2]}"
+                if row_record == record_type:
+                    values = parts[4:]
+                    row_dict = dict(zip(headers, values))
+                    rows.append(row_dict)
+
+        return rows
+
+    def _convert_value(self, value, spark_type):
+        """Convert string value to appropriate Python type."""
+        from pyspark.sql.types import StringType, DoubleType, IntegerType, TimestampType
+        from datetime import datetime as dt
+
+        if value is None or value == "":
+            return None
+
+        str_val = str(value).strip()
+        if str_val == "":
+            return None
+
+        if isinstance(spark_type, StringType):
+            return str_val
+
+        elif isinstance(spark_type, DoubleType):
+            try:
+                return float(str_val)
+            except (ValueError, TypeError):
+                return None
+
+        elif isinstance(spark_type, IntegerType):
+            try:
+                return int(float(str_val))
+            except (ValueError, TypeError):
+                return None
+
+        elif isinstance(spark_type, TimestampType):
+            for fmt in ["%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S",
+                       "%Y/%m/%d %H:%M", "%Y-%m-%d %H:%M"]:
+                try:
+                    result = dt.strptime(str_val, fmt)
+                    if type(result).__name__ == 'datetime':
+                        return result
+                except (ValueError, TypeError):
+                    continue
+            return None
+
+        return str_val
+
+
 class NemwebDataSource(DataSource):
     """
     Custom PySpark Data Source for AEMO NEMWEB electricity market data.
 
     Supports both batch and streaming reads with automatic failure recovery.
-    Uses fine-grained partitioning (one partition per region+day) for
-    maximum parallelism during batch reads.
+
+    **Recommended usage (Volume-based):**
+        # First, download files to UC Volume
+        from nemweb_ingest import download_nemweb_files
+        download_nemweb_files("/Volumes/main/nemweb/raw", start_date="2024-01-01", end_date="2024-06-30")
+
+        # Then read from Volume
+        df = spark.read.format("nemweb").option("volume_path", "/Volumes/main/nemweb/raw").load()
+
+    **Legacy usage (HTTP-based):**
+        df = spark.read.format("nemweb").option("start_date", "2024-01-01").load()
 
     Batch Options:
+        volume_path (str): Path to UC Volume with downloaded files (RECOMMENDED)
         table (str): MMS table name (default: DISPATCHREGIONSUM)
         regions (str): Comma-separated region IDs (default: all 5 NEM regions)
-        start_date (str): Start date in YYYY-MM-DD format
-        end_date (str): End date in YYYY-MM-DD format
-        checkpoint_table (str): Delta table for tracking completed partitions
-        skip_completed (str): "true" to skip completed partitions (default: "true")
+        start_date (str): Start date in YYYY-MM-DD format (HTTP mode only)
+        end_date (str): End date in YYYY-MM-DD format (HTTP mode only)
 
     Streaming Options:
         table (str): MMS table name
@@ -659,6 +859,10 @@ class NemwebDataSource(DataSource):
 
     def reader(self, schema: StructType) -> DataSourceReader:
         """Create a batch reader for this data source."""
+        # Use Volume reader if volume_path is provided (recommended)
+        if self.options.get("volume_path"):
+            return NemwebVolumeReader(schema, self.options)
+        # Fall back to HTTP reader
         return NemwebDataSourceReader(schema, self.options)
 
     def simpleStreamReader(self, schema: StructType) -> SimpleDataSourceStreamReader:
