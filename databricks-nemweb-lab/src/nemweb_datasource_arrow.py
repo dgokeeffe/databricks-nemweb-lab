@@ -206,7 +206,6 @@ class NemwebArrowReader(DataSourceReader):
 
     def _read_volume_file(self, partition: NemwebArrowPartition) -> Iterator:
         """Read from local ZIP file in volume."""
-        import pyarrow as pa
         import zipfile
         import io
 
@@ -236,6 +235,10 @@ class NemwebArrowReader(DataSourceReader):
                         with zf.open(name) as csv_file:
                             rows.extend(self._parse_csv(csv_file, record_type))
 
+            # Filter by regions if specified
+            if self.regions and rows:
+                rows = [r for r in rows if r.get("REGIONID") in self.regions]
+
             if rows:
                 batch = self._rows_to_record_batch(rows, table_config["fields"], arrow_schema)
                 yield batch
@@ -246,7 +249,6 @@ class NemwebArrowReader(DataSourceReader):
 
     def _read_http(self, partition: NemwebArrowPartition) -> Iterator:
         """Fetch data via HTTP and return as RecordBatch."""
-        import pyarrow as pa
         import zipfile
         import io
         from urllib.request import urlopen, Request
