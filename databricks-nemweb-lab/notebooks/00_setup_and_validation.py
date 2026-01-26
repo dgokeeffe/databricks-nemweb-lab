@@ -332,6 +332,10 @@ FORCE_RELOAD = FORCE_RELOAD_PARAM or not table_exists
 # MAGIC - Parses NEMWEB multi-record CSV format
 # MAGIC - Returns PyArrow RecordBatch for zero-copy transfer to Spark
 # MAGIC - Works on both Serverless and Classic compute
+# MAGIC
+# MAGIC We load **two tables** from the same DISPATCHIS files:
+# MAGIC - **DISPATCHREGIONSUM**: Demand, generation, and interconnector data
+# MAGIC - **DISPATCHPRICE**: Regional Reference Price (RRP) data
 
 # COMMAND ----------
 
@@ -342,13 +346,15 @@ if FORCE_RELOAD or not table_exists:
 
     print(f"Loading NEMWEB data: {START_DATE} to {END_DATE}")
     print("=" * 50)
-    print("This will download files to Volume and load into Delta table.")
+    print("This will download files to Volume and load into Delta tables.")
     print("Downloads are parallel (8 threads) and skip existing files.")
     print()
 
-    # Read using Arrow data source with auto_download
-    # This downloads files to volume first, then reads them
-    df = (spark.read
+    # -------------------------------------------------------------------------
+    # Load DISPATCHREGIONSUM (demand/supply data)
+    # -------------------------------------------------------------------------
+    print("Loading DISPATCHREGIONSUM (demand data)...")
+    df_regionsum = (spark.read
           .format("nemweb_arrow")
           .option("volume_path", VOLUME_PATH)
           .option("table", "DISPATCHREGIONSUM")
@@ -359,18 +365,41 @@ if FORCE_RELOAD or not table_exists:
           .option("skip_existing", "true")
           .load())
 
-    # Write to Delta
-    if table_exists:
-        spark.sql(f"DROP TABLE IF EXISTS {TABLE_PATH}")
+    # Write DISPATCHREGIONSUM table
+    spark.sql(f"DROP TABLE IF EXISTS {TABLE_PATH}")
+    df_regionsum.write.format("delta").mode("overwrite").saveAsTable(TABLE_PATH)
+    regionsum_count = spark.table(TABLE_PATH).count()
+    print(f"  Loaded {regionsum_count:,} rows to {TABLE_PATH}")
 
-    df.write.format("delta").mode("overwrite").saveAsTable(TABLE_PATH)
+    # -------------------------------------------------------------------------
+    # Load DISPATCHPRICE (price data) - same files, different record type
+    # -------------------------------------------------------------------------
+    print("\nLoading DISPATCHPRICE (price data)...")
+    PRICE_TABLE_PATH = f"{CATALOG}.{SCHEMA}.nemweb_prices"
+
+    df_price = (spark.read
+          .format("nemweb_arrow")
+          .option("volume_path", VOLUME_PATH)
+          .option("table", "DISPATCHPRICE")
+          .option("start_date", START_DATE)
+          .option("end_date", END_DATE)
+          .option("auto_download", "true")  # Files already downloaded
+          .option("max_workers", "8")
+          .option("skip_existing", "true")
+          .load())
+
+    spark.sql(f"DROP TABLE IF EXISTS {PRICE_TABLE_PATH}")
+    df_price.write.format("delta").mode("overwrite").saveAsTable(PRICE_TABLE_PATH)
+    price_count = spark.table(PRICE_TABLE_PATH).count()
+    print(f"  Loaded {price_count:,} rows to {PRICE_TABLE_PATH}")
 
     elapsed = time.time() - start_time
-    row_count = spark.table(TABLE_PATH).count()
 
     print()
     print("=" * 50)
-    print(f"Loaded {row_count:,} rows in {elapsed:.1f}s")
+    print(f"Data loading complete in {elapsed:.1f}s")
+    print(f"  - {TABLE_PATH}: {regionsum_count:,} rows (demand)")
+    print(f"  - {PRICE_TABLE_PATH}: {price_count:,} rows (prices)")
 else:
     print("Using existing data")
 
@@ -382,32 +411,52 @@ else:
 # COMMAND ----------
 
 from databricks.sdk.runtime import display
-from pyspark.sql.functions import min, max, countDistinct
+from pyspark.sql.functions import min, max, countDistinct, avg, round as spark_round
 
-df = spark.table(TABLE_PATH)
+PRICE_TABLE_PATH = f"{CATALOG}.{SCHEMA}.nemweb_prices"
 
-print(f"Table: {TABLE_PATH}")
-print(f"Rows:  {df.count():,}")
-print()
+print("=" * 60)
+print("LOADED TABLES")
+print("=" * 60)
 
-# Statistics
-stats = df.agg(
-    min("SETTLEMENTDATE").alias("min_date"),
-    max("SETTLEMENTDATE").alias("max_date"),
-    countDistinct("REGIONID").alias("regions")
-).collect()[0]
+for table_name, table_path in [
+    ("Demand/Supply (DISPATCHREGIONSUM)", TABLE_PATH),
+    ("Prices (DISPATCHPRICE)", PRICE_TABLE_PATH),
+]:
+    if spark.catalog.tableExists(table_path):
+        df = spark.table(table_path)
+        count = df.count()
+        print(f"\n{table_name}")
+        print(f"  Table: {table_path}")
+        print(f"  Rows:  {count:,}")
+    else:
+        print(f"\n{table_name}: {table_path} - NOT FOUND")
 
-print(f"Date range: {stats['min_date']} to {stats['max_date']}")
-print(f"Regions:    {stats['regions']}")
-print()
+# COMMAND ----------
 
-# Verify timestamp type is correct
-print("Schema:")
-df.printSchema()
-print()
+# MAGIC %md
+# MAGIC ### Price Data Preview
 
-print("Sample data:")
-display(df.limit(5))
+# COMMAND ----------
+
+# Show price table statistics
+if spark.catalog.tableExists(PRICE_TABLE_PATH):
+    price_df = spark.table(PRICE_TABLE_PATH)
+
+    stats = price_df.agg(
+        min("SETTLEMENTDATE").alias("min_date"),
+        max("SETTLEMENTDATE").alias("max_date"),
+        countDistinct("REGIONID").alias("regions"),
+        spark_round(avg("RRP"), 2).alias("avg_price"),
+    ).collect()[0]
+
+    print(f"Date range: {stats['min_date']} to {stats['max_date']}")
+    print(f"Regions:    {stats['regions']}")
+    print(f"Avg RRP:    ${stats['avg_price']}/MWh")
+    print()
+
+    print("Sample price data:")
+    display(price_df.orderBy("SETTLEMENTDATE").limit(5))
 
 # COMMAND ----------
 
@@ -418,6 +467,12 @@ display(df.limit(5))
 
 from nemweb_utils import get_version
 
+PRICE_TABLE_PATH = f"{CATALOG}.{SCHEMA}.nemweb_prices"
+
+# Get row counts
+raw_count = spark.table(TABLE_PATH).count() if spark.catalog.tableExists(TABLE_PATH) else 0
+price_count = spark.table(PRICE_TABLE_PATH).count() if spark.catalog.tableExists(PRICE_TABLE_PATH) else 0
+
 print("=" * 60)
 print("SETUP COMPLETE")
 print("=" * 60)
@@ -426,9 +481,14 @@ Environment:
   Spark:    {spark.version}
   Package:  v{get_version()}
 
-Data:
-  Table:    {TABLE_PATH}
-  Rows:     {spark.table(TABLE_PATH).count():,}
+Data Tables:
+  {TABLE_PATH}
+    - Rows: {raw_count:,}
+    - Contains: TOTALDEMAND, AVAILABLEGENERATION, NETINTERCHANGE
+
+  {PRICE_TABLE_PATH}
+    - Rows: {price_count:,}
+    - Contains: RRP (Regional Reference Price), EEP
 
 Base Environment (for workspace-wide use):
   Wheel:    {ARTIFACTS_VOLUME}/nemweb_datasource-latest.whl
@@ -439,16 +499,10 @@ Base Environment (for workspace-wide use):
   2. Create new environment, select environment.yml
   3. Click star icon to set as default
 
-Arrow Data Source Features:
-  - Auto-download to UC Volume (parallel, skip existing)
-  - Zero-copy transfer via PyArrow RecordBatch
-  - Native timestamp handling
-  - Works on Serverless and Classic compute
-
 Next Steps:
-  1. Open 01_custom_source_exercise.py
-  2. Follow exercises in order
-  3. Exercise 03 uses the pre-loaded data
+  1. Open 01_custom_source_exercise.py for Data Source API
+  2. Open databricks-nemweb-analyst-lab/ for price analysis
+  3. Exercise 03 uses the pre-loaded nemweb_raw data
 """)
 print("=" * 60)
 
