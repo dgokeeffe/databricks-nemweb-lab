@@ -80,6 +80,7 @@ resources:
             base_parameters:
               catalog: "${var.catalog}"
               schema: "${var.schema}"
+              include_current: "false"
 
         - task_key: custom_source
           depends_on:
@@ -126,6 +127,7 @@ resources:
             base_parameters:
               catalog: "${var.catalog}"
               schema: "${var.schema}"
+              include_current: "false"
 
         - task_key: custom_source_solution
           depends_on:

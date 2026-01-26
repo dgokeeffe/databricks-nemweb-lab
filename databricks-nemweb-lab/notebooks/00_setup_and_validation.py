@@ -35,6 +35,7 @@ dbutils.widgets.text("table", "nemweb_raw", "Raw Table Name")
 dbutils.widgets.text("volume", "raw_files", "Volume Name")
 dbutils.widgets.text("days_history", "180", "Days of History")
 dbutils.widgets.dropdown("force_reload", "false", ["true", "false"], "Force Reload")
+dbutils.widgets.dropdown("include_current", "false", ["true", "false"], "Include Recent (CURRENT)")
 
 # Get configuration from widgets
 CATALOG = dbutils.widgets.get("catalog")
@@ -43,6 +44,7 @@ RAW_TABLE = dbutils.widgets.get("table")
 VOLUME_NAME = dbutils.widgets.get("volume")
 DAYS_HISTORY = int(dbutils.widgets.get("days_history"))
 FORCE_RELOAD_PARAM = dbutils.widgets.get("force_reload") == "true"
+INCLUDE_CURRENT = dbutils.widgets.get("include_current")
 
 # Date range for data loading
 END_DATE = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -55,12 +57,13 @@ ARTIFACTS_VOLUME = f"/Volumes/{CATALOG}/{SCHEMA}/artifacts"
 
 print("Lab Configuration")
 print("=" * 50)
-print(f"Catalog:      {CATALOG}")
-print(f"Schema:       {SCHEMA}")
-print(f"Table:        {RAW_TABLE}")
-print(f"Volume:       {VOLUME_PATH}")
-print(f"Date range:   {START_DATE} to {END_DATE} ({DAYS_HISTORY} days)")
-print(f"Force reload: {FORCE_RELOAD_PARAM}")
+print(f"Catalog:        {CATALOG}")
+print(f"Schema:         {SCHEMA}")
+print(f"Table:          {RAW_TABLE}")
+print(f"Volume:         {VOLUME_PATH}")
+print(f"Date range:     {START_DATE} to {END_DATE} ({DAYS_HISTORY} days)")
+print(f"Force reload:   {FORCE_RELOAD_PARAM}")
+print(f"Include recent: {INCLUDE_CURRENT} (fetch last ~7 days from CURRENT)")
 
 # COMMAND ----------
 
@@ -218,6 +221,7 @@ RAW_TABLE = dbutils.widgets.get("table")
 VOLUME_NAME = dbutils.widgets.get("volume")
 DAYS_HISTORY = int(dbutils.widgets.get("days_history"))
 FORCE_RELOAD_PARAM = dbutils.widgets.get("force_reload") == "true"
+INCLUDE_CURRENT = dbutils.widgets.get("include_current")
 
 VOLUME_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}"
 TABLE_PATH = f"{CATALOG}.{SCHEMA}.{RAW_TABLE}"
@@ -363,6 +367,7 @@ if FORCE_RELOAD or not table_exists:
           .option("auto_download", "true")
           .option("max_workers", "8")
           .option("skip_existing", "true")
+          .option("include_current", INCLUDE_CURRENT)
           .load())
 
     # Write DISPATCHREGIONSUM table
@@ -386,6 +391,7 @@ if FORCE_RELOAD or not table_exists:
           .option("auto_download", "true")  # Files already downloaded
           .option("max_workers", "8")
           .option("skip_existing", "true")
+          .option("include_current", INCLUDE_CURRENT)
           .load())
 
     spark.sql(f"DROP TABLE IF EXISTS {PRICE_TABLE_PATH}")
