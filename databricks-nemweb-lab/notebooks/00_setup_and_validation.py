@@ -168,7 +168,7 @@ except Exception as e:
 # MAGIC ## 7. Environment Summary
 
 # COMMAND ----------
-
+import sys
 print("=" * 60)
 print("ENVIRONMENT VALIDATION COMPLETE")
 print("=" * 60)
@@ -207,10 +207,15 @@ CATALOG = "main"
 SCHEMA = "nemweb_lab"
 RAW_TABLE = "nemweb_raw"
 
-# Data range - adjust based on how much data you want
+# Data range - uses last 6 months from today
 # More data = better optimization comparison, but longer load time
-START_DATE = "2024-01-01"
-END_DATE = "2024-06-30"  # 6 months
+from datetime import datetime, timedelta
+
+# End date is yesterday (today's data may be incomplete)
+END_DATE = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+# Start date is 6 months ago
+START_DATE = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
+
 REGIONS = "NSW1,QLD1,SA1,VIC1,TAS1"
 
 print(f"Target table: {CATALOG}.{SCHEMA}.{RAW_TABLE}")
@@ -309,6 +314,8 @@ else:
 
 # COMMAND ----------
 
+from databricks.sdk.runtime import spark, display
+
 # Show data summary
 raw_df = spark.table(f"{CATALOG}.{SCHEMA}.{RAW_TABLE}")
 
@@ -318,7 +325,7 @@ print(f"\nSchema:")
 raw_df.printSchema()
 
 print("\nSample data:")
-raw_df.show(5, truncate=False)
+display(raw_df.limit(5))
 
 # COMMAND ----------
 

@@ -8,6 +8,10 @@ Run with: uv run pytest src/tests/test_nemweb_integration.py -v
 import pytest
 from datetime import datetime, timedelta
 
+# Use dates from last week for testing (guaranteed to be in archive)
+TEST_DATE = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+TEST_DATE_DT = datetime.now() - timedelta(days=7)
+
 
 class TestNemwebFetch:
     """Integration tests for NEMWEB HTTP fetching."""
@@ -16,13 +20,13 @@ class TestNemwebFetch:
         """Test URL building for archive data (> 7 days old)."""
         from nemweb_utils import _build_nemweb_url
 
-        # Use a date that's definitely in the archive
-        old_date = datetime(2025, 1, 15)
-        url = _build_nemweb_url("Dispatch_SCADA", "DISPATCHSCADA", old_date)
+        # Use a date that's definitely in the archive (14 days ago)
+        old_date = datetime.now() - timedelta(days=14)
+        url = _build_nemweb_url("DispatchIS_Reports", "DISPATCHIS", old_date)
 
         assert "ARCHIVE" in url
-        assert "PUBLIC_DISPATCHSCADA_20250115.zip" in url
-        assert url == "https://www.nemweb.com.au/REPORTS/ARCHIVE/Dispatch_SCADA/PUBLIC_DISPATCHSCADA_20250115.zip"
+        assert "PUBLIC_DISPATCHIS_" in url
+        assert old_date.strftime("%Y%m%d") in url
 
     def test_build_nemweb_url_current(self):
         """Test URL building for current data (< 7 days old)."""
@@ -39,10 +43,11 @@ class TestNemwebFetch:
         """Test fetching real data from NEMWEB archive."""
         from nemweb_utils import _fetch_and_extract_zip
 
-        # Fetch a known archive file
-        url = "https://www.nemweb.com.au/REPORTS/ARCHIVE/Dispatch_SCADA/PUBLIC_DISPATCHSCADA_20250115.zip"
+        # Fetch archive file from 7 days ago
+        date_str = TEST_DATE_DT.strftime("%Y%m%d")
+        url = f"https://www.nemweb.com.au/REPORTS/ARCHIVE/DispatchIS_Reports/PUBLIC_DISPATCHIS_{date_str}.zip"
 
-        rows = _fetch_and_extract_zip(url)
+        rows = _fetch_and_extract_zip(url, record_type="DISPATCH,REGIONSUM")
 
         # Should have data
         assert len(rows) > 0, "Expected rows from NEMWEB"
@@ -50,24 +55,25 @@ class TestNemwebFetch:
 
         # Check expected columns exist
         first_row = rows[0]
-        print(f"Columns: {list(first_row.keys())}")
+        print(f"Columns: {list(first_row.keys())[:10]}...")
 
-        # DISPATCHSCADA files contain multiple tables - check we got some data
-        assert len(first_row) > 0, "Expected columns in row"
+        # Check we got REGIONSUM data
+        assert "REGIONID" in first_row, "Expected REGIONID column"
+        assert "TOTALDEMAND" in first_row, "Expected TOTALDEMAND column"
 
     def test_fetch_nemweb_data_single_day(self):
         """Test fetching a single day of DISPATCHREGIONSUM data."""
         from nemweb_utils import fetch_nemweb_data
 
-        # Fetch one day from archive
+        # Fetch one day from last week
         rows = fetch_nemweb_data(
             table="DISPATCHREGIONSUM",
             region="NSW1",
-            start_date="2025-01-15",
-            end_date="2025-01-15"
+            start_date=TEST_DATE,
+            end_date=TEST_DATE
         )
 
-        print(f"Fetched {len(rows)} rows for NSW1 on 2025-01-15")
+        print(f"Fetched {len(rows)} rows for NSW1 on {TEST_DATE}")
 
         if len(rows) > 0:
             # Check expected columns
@@ -94,11 +100,11 @@ class TestNemwebFetch:
         rows = fetch_nemweb_data(
             table="DISPATCHREGIONSUM",
             region=None,  # All regions
-            start_date="2025-01-15",
-            end_date="2025-01-15"
+            start_date=TEST_DATE,
+            end_date=TEST_DATE
         )
 
-        print(f"Fetched {len(rows)} rows for all regions")
+        print(f"Fetched {len(rows)} rows for all regions on {TEST_DATE}")
 
         if len(rows) > 0:
             # Check we got multiple regions
@@ -158,15 +164,16 @@ if __name__ == "__main__":
 
     print(f"\nTABLE_CONFIG: {TABLE_CONFIG}")
 
-    print("\nFetching single day of NSW1 data...")
+    print(f"\nFetching single day of NSW1 data for {TEST_DATE}...")
     rows = fetch_nemweb_data(
         table="DISPATCHREGIONSUM",
         region="NSW1",
-        start_date="2025-01-15",
-        end_date="2025-01-15"
+        start_date=TEST_DATE,
+        end_date=TEST_DATE
     )
 
     print(f"Got {len(rows)} rows")
     if rows:
-        print(f"First row: {rows[0]}")
-        print(f"Columns: {list(rows[0].keys())}")
+        print(f"First row REGIONID: {rows[0].get('REGIONID')}")
+        print(f"First row TOTALDEMAND: {rows[0].get('TOTALDEMAND')}")
+        print(f"Columns: {list(rows[0].keys())[:10]}...")
