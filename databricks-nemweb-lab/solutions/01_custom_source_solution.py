@@ -77,11 +77,6 @@ from pyspark.sql.types import (
 )
 from typing import Iterator, Tuple
 from datetime import datetime, timedelta
-import csv
-import io
-import zipfile
-from urllib.request import urlopen, Request
-from urllib.error import HTTPError
 
 def get_dispatchregionsum_schema() -> StructType:
     """
@@ -116,7 +111,23 @@ for field in schema.fields:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Solution 1.2: Partition Planning
+# MAGIC ## Solution 1.2: Partition Planning and Data Reading
+# MAGIC
+# MAGIC We use helper functions from `nemweb_utils.py` that handle the complex NEMWEB
+# MAGIC multi-record CSV format (parsing, type conversion, HTTP retries).
+
+# COMMAND ----------
+
+# Import helper functions that handle NEMWEB's complex format
+import sys
+import os
+
+# Add src to path for imports
+notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
+repo_root = str(os.path.dirname(os.path.dirname(notebook_path)))
+sys.path.insert(0, f"/Workspace{repo_root}/src")
+
+from nemweb_utils import fetch_nemweb_data, parse_nemweb_csv
 
 # COMMAND ----------
 
@@ -145,7 +156,7 @@ class NemwebReader(DataSourceReader):
         self.schema = schema
         self.options = options
         self.regions = options.get("regions", "NSW1,QLD1,SA1,VIC1,TAS1").split(",")
-        # Default to yesterday (ensures data exists in CURRENT folder)
+        # Default to yesterday (ensures data exists)
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         self.start_date = options.get("start_date", yesterday)
         self.end_date = options.get("end_date", yesterday)
@@ -154,7 +165,7 @@ class NemwebReader(DataSourceReader):
         """
         Plan partitions for parallel reading.
 
-        SOLUTION 1.2: Create one partition per region
+        SOLUTION 1.2a: Create one partition per region
         """
         partitions = []
 
@@ -172,78 +183,20 @@ class NemwebReader(DataSourceReader):
         """
         Read data for a single partition (runs on workers).
 
-        SOLUTION 1.2: Actually fetches from NEMWEB API!
+        SOLUTION 1.2b: Use helper functions to fetch and parse NEMWEB data
         """
-        # Build URL for the current dispatch data
-        # Recent data (<7 days) is in CURRENT, older in ARCHIVE
-        date = datetime.strptime(partition.start_date, "%Y-%m-%d")
-        days_ago = (datetime.now() - date).days
-        date_str = date.strftime("%Y%m%d")
-
-        base_url = "https://www.nemweb.com.au/REPORTS"
-        folder = "CURRENT" if days_ago < 7 else "ARCHIVE"
-        url = f"{base_url}/{folder}/Dispatch_SCADA/PUBLIC_DISPATCHREGIONSUM_{date_str}.zip"
-
-        print(f"Fetching: {url}")
-
-        try:
-            # Fetch ZIP file from NEMWEB
-            request = Request(url, headers={"User-Agent": "DatabricksLab/1.0"})
-            with urlopen(request, timeout=30) as response:
-                zip_data = io.BytesIO(response.read())
-
-            # Extract and parse CSV from ZIP
-            rows = []
-            with zipfile.ZipFile(zip_data) as zf:
-                for name in zf.namelist():
-                    if name.endswith(".CSV") or name.endswith(".csv"):
-                        with zf.open(name) as csv_file:
-                            text = io.TextIOWrapper(csv_file, encoding="utf-8")
-                            reader = csv.DictReader(text)
-                            rows.extend(list(reader))
-
-            # Filter to requested region and yield tuples
-            for row in rows:
-                if row.get("REGIONID") == partition.region:
-                    yield self._row_to_tuple(row)
-
-        except HTTPError as e:
-            print(f"HTTP error {e.code} for {url}")
-            # Return empty if file not found
-            return
-
-    def _row_to_tuple(self, row: dict) -> Tuple:
-        """Convert CSV row dict to tuple matching schema."""
-        def parse_ts(val):
-            if not val:
-                return None
-            for fmt in ["%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"]:
-                try:
-                    return datetime.strptime(val, fmt)
-                except ValueError:
-                    continue
-            return None
-
-        def parse_float(val):
-            try:
-                return float(val) if val else None
-            except (ValueError, TypeError):
-                return None
-
-        return (
-            parse_ts(row.get("SETTLEMENTDATE")),
-            row.get("RUNNO"),
-            row.get("REGIONID"),
-            row.get("DISPATCHINTERVAL"),
-            row.get("INTERVENTION"),
-            parse_float(row.get("TOTALDEMAND")),
-            parse_float(row.get("AVAILABLEGENERATION")),
-            parse_float(row.get("AVAILABLELOAD")),
-            parse_float(row.get("DEMANDFORECAST")),
-            parse_float(row.get("DISPATCHABLEGENERATION")),
-            parse_float(row.get("DISPATCHABLELOAD")),
-            parse_float(row.get("NETINTERCHANGE")),
+        # Fetch data using the helper function
+        # This handles: HTTP requests, ZIP extraction, multi-record CSV parsing
+        data = fetch_nemweb_data(
+            table="DISPATCHREGIONSUM",
+            region=partition.region,
+            start_date=partition.start_date,
+            end_date=partition.end_date
         )
+
+        # Convert to tuples matching schema using the parser helper
+        for row_tuple in parse_nemweb_csv(data, self.schema):
+            yield row_tuple
 
 
 # Test partition planning
