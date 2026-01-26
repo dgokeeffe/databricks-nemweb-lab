@@ -21,24 +21,37 @@
 
 # MAGIC %md
 # MAGIC ## 1. Configuration
+# MAGIC
+# MAGIC Parameters can be passed via job configuration or set interactively.
 
 # COMMAND ----------
 
-# Lab configuration - modify CATALOG if needed for your workspace
-CATALOG = "main"
-SCHEMA = "nemweb_lab"
-RAW_TABLE = "nemweb_raw"
-VOLUME_NAME = "raw_files"
-
-# Date range for data loading (last 6 months)
 from datetime import datetime, timedelta
 
+# Create widgets with defaults - these can be overridden by job parameters
+dbutils.widgets.text("catalog", "main", "Catalog Name")
+dbutils.widgets.text("schema", "nemweb_lab", "Schema Name")
+dbutils.widgets.text("table", "nemweb_raw", "Raw Table Name")
+dbutils.widgets.text("volume", "raw_files", "Volume Name")
+dbutils.widgets.text("days_history", "180", "Days of History")
+dbutils.widgets.dropdown("force_reload", "false", ["true", "false"], "Force Reload")
+
+# Get configuration from widgets
+CATALOG = dbutils.widgets.get("catalog")
+SCHEMA = dbutils.widgets.get("schema")
+RAW_TABLE = dbutils.widgets.get("table")
+VOLUME_NAME = dbutils.widgets.get("volume")
+DAYS_HISTORY = int(dbutils.widgets.get("days_history"))
+FORCE_RELOAD_PARAM = dbutils.widgets.get("force_reload") == "true"
+
+# Date range for data loading
 END_DATE = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-START_DATE = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
+START_DATE = (datetime.now() - timedelta(days=DAYS_HISTORY)).strftime("%Y-%m-%d")
 
 # Derived paths
 VOLUME_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}"
 TABLE_PATH = f"{CATALOG}.{SCHEMA}.{RAW_TABLE}"
+ARTIFACTS_VOLUME = f"/Volumes/{CATALOG}/{SCHEMA}/artifacts"
 
 print("Lab Configuration")
 print("=" * 50)
@@ -46,7 +59,8 @@ print(f"Catalog:      {CATALOG}")
 print(f"Schema:       {SCHEMA}")
 print(f"Table:        {RAW_TABLE}")
 print(f"Volume:       {VOLUME_PATH}")
-print(f"Date range:   {START_DATE} to {END_DATE}")
+print(f"Date range:   {START_DATE} to {END_DATE} ({DAYS_HISTORY} days)")
+print(f"Force reload: {FORCE_RELOAD_PARAM}")
 
 # COMMAND ----------
 
@@ -195,25 +209,28 @@ print("Arrow data source registered (format: 'nemweb_arrow')")
 
 # COMMAND ----------
 
-# Re-define config after restart
-CATALOG = "main"
-SCHEMA = "nemweb_lab"
-RAW_TABLE = "nemweb_raw"
-VOLUME_NAME = "raw_files"
+# Re-get config from widgets after restart (widgets persist across restart)
+from datetime import datetime, timedelta
+
+CATALOG = dbutils.widgets.get("catalog")
+SCHEMA = dbutils.widgets.get("schema")
+RAW_TABLE = dbutils.widgets.get("table")
+VOLUME_NAME = dbutils.widgets.get("volume")
+DAYS_HISTORY = int(dbutils.widgets.get("days_history"))
+FORCE_RELOAD_PARAM = dbutils.widgets.get("force_reload") == "true"
+
 VOLUME_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME_NAME}"
 TABLE_PATH = f"{CATALOG}.{SCHEMA}.{RAW_TABLE}"
+ARTIFACTS_VOLUME = f"/Volumes/{CATALOG}/{SCHEMA}/artifacts"
 
-from datetime import datetime, timedelta
 END_DATE = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-START_DATE = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
+START_DATE = (datetime.now() - timedelta(days=DAYS_HISTORY)).strftime("%Y-%m-%d")
 
 # Create catalog, schema, volumes
 spark.sql(f"CREATE CATALOG IF NOT EXISTS {CATALOG}")
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
 spark.sql(f"CREATE VOLUME IF NOT EXISTS {CATALOG}.{SCHEMA}.{VOLUME_NAME}")
 spark.sql(f"CREATE VOLUME IF NOT EXISTS {CATALOG}.{SCHEMA}.artifacts")
-
-ARTIFACTS_VOLUME = f"/Volumes/{CATALOG}/{SCHEMA}/artifacts"
 
 print(f"Schema: {CATALOG}.{SCHEMA}")
 print(f"Volume: {VOLUME_PATH}")
@@ -294,11 +311,15 @@ table_exists = spark.catalog.tableExists(TABLE_PATH)
 if table_exists:
     row_count = spark.table(TABLE_PATH).count()
     print(f"Table {RAW_TABLE} exists with {row_count:,} rows")
-    print("Set FORCE_RELOAD = True below to reload")
-    FORCE_RELOAD = False
+    if FORCE_RELOAD_PARAM:
+        print("Force reload enabled via parameter - will reload data")
+    else:
+        print("Set force_reload widget to 'true' to reload")
 else:
     print(f"Table {RAW_TABLE} does not exist - will load data")
-    FORCE_RELOAD = True
+
+# Determine if we should reload
+FORCE_RELOAD = FORCE_RELOAD_PARAM or not table_exists
 
 # COMMAND ----------
 

@@ -21,19 +21,30 @@
 # MAGIC %md
 # MAGIC ## Configuration
 # MAGIC
-# MAGIC We'll read from the pre-loaded NEMWEB data created in setup.
+# MAGIC Parameters should match those used in 00_setup_and_validation.py
 
 # COMMAND ----------
 
 from databricks.sdk.runtime import spark, display
 
-# Must match the values from 00_setup_and_validation.py
-SOURCE_CATALOG = "main"
-SOURCE_SCHEMA = "nemweb_lab"
-SOURCE_TABLE = "nemweb_raw"
+# Create widgets with defaults matching setup notebook
+dbutils.widgets.text("catalog", "main", "Catalog Name")
+dbutils.widgets.text("schema", "nemweb_lab", "Source Schema")
+dbutils.widgets.text("table", "nemweb_raw", "Source Table")
+dbutils.widgets.text("target_schema", "nemweb_optimization_lab", "Target Schema")
 
-# Target schema for optimization comparison tables
-TARGET_SCHEMA = "nemweb_optimization_lab"
+# Get configuration from widgets
+SOURCE_CATALOG = dbutils.widgets.get("catalog")
+SOURCE_SCHEMA = dbutils.widgets.get("schema")
+SOURCE_TABLE = dbutils.widgets.get("table")
+TARGET_SCHEMA = dbutils.widgets.get("target_schema")
+
+print("Configuration")
+print("=" * 50)
+print(f"Catalog:       {SOURCE_CATALOG}")
+print(f"Source Schema: {SOURCE_SCHEMA}")
+print(f"Source Table:  {SOURCE_TABLE}")
+print(f"Target Schema: {TARGET_SCHEMA}")
 
 # Verify source table exists
 source_table_path = f"{SOURCE_CATALOG}.{SOURCE_SCHEMA}.{SOURCE_TABLE}"

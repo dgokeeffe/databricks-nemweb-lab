@@ -104,6 +104,9 @@ resources:
             - task_key: lakeflow_pipeline
           notebook_task:
             notebook_path: "./databricks-nemweb-lab/notebooks/03b_optimization_comparison.py"
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
 
     # Pipeline refresh job - triggers the Lakeflow pipeline
     nemweb_pipeline_job:
@@ -141,5 +144,8 @@ resources:
             - task_key: lakeflow_pipeline_solution
           notebook_task:
             notebook_path: "./databricks-nemweb-lab/solutions/03b_optimization_comparison_solution.py"
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
 
 # For more options and schema, see: https://docs.databricks.com/aws/en/dev-tools/bundles/settings
