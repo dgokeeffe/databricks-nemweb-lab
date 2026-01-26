@@ -169,6 +169,8 @@ class NemwebArrowReader(DataSourceReader):
         self.auto_download = options.get("auto_download", "false").lower() == "true"
         self.max_workers = int(options.get("max_workers", "8"))
         self.skip_existing = options.get("skip_existing", "true").lower() == "true"
+        # Include recent data from CURRENT (5-minute interval files)
+        self.include_current = options.get("include_current", "false").lower() == "true"
 
     def partitions(self) -> list[InputPartition]:
         """Create partitions based on mode (volume, auto-download, or HTTP)."""
@@ -286,7 +288,11 @@ class NemwebArrowReader(DataSourceReader):
             current += timedelta(days=1)
 
         if skipped_recent > 0:
-            print(f"Note: Skipping {skipped_recent} recent days (< 7 days old, not yet in ARCHIVE)")
+            if self.include_current:
+                print(f"Note: {skipped_recent} recent days will be fetched from CURRENT (5-min intervals)")
+            else:
+                print(f"Note: Skipping {skipped_recent} recent days (< 7 days old, not yet in ARCHIVE)")
+                print("      Use .option('include_current', 'true') to download recent 5-minute interval files")
 
         to_download = [t for t in tasks if not t["skip"]]
         skipped = len([t for t in tasks if t["skip"]])
@@ -345,6 +351,100 @@ class NemwebArrowReader(DataSourceReader):
             f"Download complete: {results['success']} successful, "
             f"{results['not_found']} not found, {results['failed']} failed"
         )
+
+        # Download recent files from CURRENT if enabled
+        if self.include_current and skipped_recent > 0:
+            self._download_from_current(folder, file_prefix, table_path, archive_cutoff, end)
+
+    def _download_from_current(
+        self,
+        folder: str,
+        file_prefix: str,
+        table_path: str,
+        start_date: datetime,
+        end_date: datetime
+    ) -> None:
+        """
+        Download recent 5-minute interval files from CURRENT.
+
+        CURRENT contains individual dispatch interval files (every 5 minutes)
+        that haven't been consolidated into daily archives yet.
+        """
+        import os
+        import re
+        from urllib.request import urlopen, Request
+        from urllib.error import HTTPError, URLError
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        print(f"\nDownloading recent data from CURRENT ({start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')})...")
+
+        # Fetch directory listing from CURRENT
+        current_url = f"{NEMWEB_CURRENT_URL}/{folder}/"
+        try:
+            request = Request(current_url, headers={"User-Agent": USER_AGENT})
+            with urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+                html = response.read().decode('utf-8')
+        except (HTTPError, URLError) as e:
+            print(f"  Failed to list CURRENT directory: {e}")
+            return
+
+        # Parse filenames from HTML directory listing
+        # Pattern: PUBLIC_DISPATCHIS_YYYYMMDDHHMM_sequence.zip
+        pattern = rf'PUBLIC_{file_prefix}_(\d{{12}})_\d+\.zip'
+        matches = re.findall(pattern, html)
+
+        # Filter to files within our date range
+        target_dates = set()
+        current = start_date
+        while current <= end_date:
+            target_dates.add(current.strftime("%Y%m%d"))
+            current += timedelta(days=1)
+
+        # Find files matching our date range
+        files_to_download = []
+        seen_files = set()
+        for match in matches:
+            date_part = match[:8]  # YYYYMMDD from YYYYMMDDHHMM
+            if date_part in target_dates:
+                # Reconstruct full filename
+                full_match = re.search(rf'(PUBLIC_{file_prefix}_{match}_\d+\.zip)', html)
+                if full_match:
+                    filename = full_match.group(1)
+                    if filename not in seen_files:
+                        seen_files.add(filename)
+                        dest_path = os.path.join(table_path, filename)
+                        if not (self.skip_existing and os.path.exists(dest_path)):
+                            files_to_download.append({
+                                "url": f"{NEMWEB_CURRENT_URL}/{folder}/{filename}",
+                                "dest_path": dest_path
+                            })
+
+        if not files_to_download:
+            print("  No new CURRENT files to download")
+            return
+
+        print(f"  Found {len(files_to_download)} files to download from CURRENT")
+
+        # Download in parallel
+        results = {"success": 0, "failed": 0}
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_to_task = {
+                executor.submit(
+                    self._download_single_file,
+                    task["url"],
+                    task["dest_path"]
+                ): task
+                for task in files_to_download
+            }
+
+            for future in as_completed(future_to_task):
+                result = future.result()
+                if result["success"]:
+                    results["success"] += 1
+                else:
+                    results["failed"] += 1
+
+        print(f"  CURRENT download complete: {results['success']} successful, {results['failed']} failed")
 
     def _download_single_file(self, url: str, dest_path: str) -> dict:
         """Download a single file with retry logic."""
@@ -691,6 +791,16 @@ class NemwebArrowDataSource(DataSource):
               .option("regions", "NSW1,VIC1")
               .load())
 
+        # Include recent data (last 7 days from CURRENT)
+        df = (spark.read.format("nemweb_arrow")
+              .option("volume_path", "/Volumes/main/nemweb/raw")
+              .option("table", "DISPATCHREGIONSUM")
+              .option("start_date", "2024-12-01")
+              .option("end_date", "2024-12-31")
+              .option("auto_download", "true")
+              .option("include_current", "true")  # Also fetch recent 5-min interval files
+              .load())
+
     Options:
         volume_path: Path to UC Volume for storing/reading files
         table: MMS table name (DISPATCHREGIONSUM, DISPATCHPRICE, TRADINGPRICE)
@@ -700,6 +810,8 @@ class NemwebArrowDataSource(DataSource):
         auto_download: If "true", download files to volume before reading (default: false)
         max_workers: Number of parallel download threads (default: 8)
         skip_existing: If "true", skip downloading files that exist (default: true)
+        include_current: If "true", also download recent 5-minute interval files from
+                        CURRENT for dates not yet in ARCHIVE (default: false)
     """
 
     @classmethod
