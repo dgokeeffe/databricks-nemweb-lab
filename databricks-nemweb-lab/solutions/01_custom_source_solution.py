@@ -28,8 +28,8 @@
 from pyspark.sql.datasource import DataSource, DataSourceReader
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType
 
-# Import spark from Databricks SDK for IDE support and local development
-from databricks.sdk.runtime import spark
+# Import spark and display from Databricks SDK for IDE support
+from databricks.sdk.runtime import spark, display
 
 class HelloWorldDataSource(DataSource):
     """Minimal data source that generates greeting messages."""
@@ -115,6 +115,9 @@ for field in schema.fields:
 # MAGIC
 # MAGIC We use helper functions from `nemweb_utils.py` that handle the complex NEMWEB
 # MAGIC multi-record CSV format (parsing, type conversion, HTTP retries).
+# MAGIC
+# MAGIC - `fetch_nemweb_data(table, region, start_date, end_date)` → Returns list of row dicts
+# MAGIC - `parse_nemweb_csv(data, schema)` → Converts dicts to tuples matching schema
 
 # COMMAND ----------
 
@@ -128,6 +131,16 @@ repo_root = str(os.path.dirname(os.path.dirname(notebook_path)))
 sys.path.insert(0, f"/Workspace{repo_root}/src")
 
 from nemweb_utils import fetch_nemweb_data, parse_nemweb_csv
+
+# Quick test - fetch one region's data
+test_data = fetch_nemweb_data(
+    table="DISPATCHREGIONSUM",
+    region="NSW1",
+    start_date="2025-12-01",
+    end_date="2025-12-01",
+    use_sample=True  # Use sample data for quick testing
+)
+print(f"Helper function works! Got {len(test_data)} rows")
 
 # COMMAND ----------
 

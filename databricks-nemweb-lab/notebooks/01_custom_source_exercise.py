@@ -38,8 +38,8 @@
 from pyspark.sql.datasource import DataSource, DataSourceReader
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType
 
-# Import spark from Databricks SDK for IDE support and local development
-from databricks.sdk.runtime import spark
+# Import spark and display from Databricks SDK for IDE support
+from databricks.sdk.runtime import spark, display
 
 # The simplest possible data source - generates "Hello, World!" rows
 class HelloWorldDataSource(DataSource):
