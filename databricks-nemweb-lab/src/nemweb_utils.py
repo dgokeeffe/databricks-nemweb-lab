@@ -26,6 +26,36 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def configure_logging(level: int = logging.INFO) -> None:
+    """
+    Configure logging for NEMWEB utilities.
+
+    Call this in your Databricks notebook to see debug output:
+
+        from nemweb_utils import configure_logging
+        configure_logging(logging.DEBUG)
+
+    Args:
+        level: Logging level (logging.DEBUG, logging.INFO, etc.)
+    """
+    # Configure the nemweb_utils logger
+    logger.setLevel(level)
+
+    # Add handler if none exists
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setLevel(level)
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%H:%M:%S'
+        )
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+
+    logger.info(f"NEMWEB logging configured at level: {logging.getLevelName(level)}")
+
+
 # NEMWEB base URLs
 NEMWEB_CURRENT_URL = "https://www.nemweb.com.au/REPORTS/CURRENT"
 NEMWEB_ARCHIVE_URL = "https://www.nemweb.com.au/REPORTS/ARCHIVE"
@@ -151,29 +181,38 @@ def fetch_nemweb_data(
         ValueError: If table is not supported
         HTTPError: If HTTP request fails
     """
-    # TODO (Exercise 1.3): Implement HTTP fetching
-    # Hint: Use _build_nemweb_url() and _fetch_and_extract_zip()
-    # Consider: How to handle missing files for specific dates?
+    logger.info(f"fetch_nemweb_data: table={table}, region={region}, "
+                f"start={start_date}, end={end_date}, use_sample={use_sample}")
 
     if use_sample:
-        return _get_sample_data(table, region)
+        sample_data = _get_sample_data(table, region)
+        logger.info(f"Returning {len(sample_data)} sample rows")
+        return sample_data
 
     if table not in TABLE_CONFIG:
         raise ValueError(f"Unsupported table: {table}. Supported: {list(TABLE_CONFIG.keys())}")
 
     config = TABLE_CONFIG[table]
     record_type = config.get("record_type")
+    logger.debug(f"Table config: folder={config['folder']}, prefix={config['file_prefix']}, "
+                 f"record_type={record_type}")
     rows = []
 
     # Parse date range
     start = datetime.strptime(start_date, "%Y-%m-%d")
     end = datetime.strptime(end_date, "%Y-%m-%d")
+    num_days = (end - start).days + 1
+    logger.info(f"Fetching {num_days} day(s) of data: {start_date} to {end_date}")
     current = start
 
+    day_count = 0
     while current <= end:
+        day_count += 1
         try:
             url = _build_nemweb_url(config["folder"], config["file_prefix"], current)
+            logger.debug(f"[Day {day_count}/{num_days}] Fetching: {url}")
             data = _fetch_and_extract_zip(url, record_type=record_type)
+            logger.debug(f"[Day {day_count}/{num_days}] Got {len(data)} rows for {current.date()}")
 
             # Filter by region if specified
             if region:
@@ -189,6 +228,11 @@ def fetch_nemweb_data(
 
         current += timedelta(days=1)
 
+    logger.info(f"fetch_nemweb_data complete: {len(rows)} total rows fetched")
+    if rows:
+        # Log sample of first row keys for debugging schema issues
+        sample_keys = list(rows[0].keys())[:5]
+        logger.debug(f"Sample row keys: {sample_keys}...")
     return rows
 
 
@@ -400,7 +444,20 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
     field_names = [field.name for field in schema.fields]
     field_types = {field.name: field.dataType for field in schema.fields}
 
+    logger.debug(f"parse_nemweb_csv: parsing {len(data)} rows with {len(field_names)} fields")
+    logger.debug(f"Schema fields: {field_names}")
+
+    # Log first row's raw values for debugging
+    if data and logger.isEnabledFor(logging.DEBUG):
+        first_row = data[0]
+        logger.debug(f"First row sample - raw values:")
+        for name in field_names[:5]:  # First 5 fields
+            raw_val = first_row.get(name)
+            logger.debug(f"  {name}: {repr(raw_val)} (type: {type(raw_val).__name__})")
+
+    row_count = 0
     for row in data:
+        row_count += 1
         values = []
         for name in field_names:
             raw_value = row.get(name)
@@ -408,9 +465,16 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
             if raw_value is None or raw_value == "":
                 values.append(None)
             else:
-                values.append(_convert_value(raw_value, field_types[name]))
+                converted = _convert_value(raw_value, field_types[name])
+                # Log conversion issues at DEBUG level
+                if converted is None and raw_value:
+                    logger.debug(f"Row {row_count}: {name} conversion returned None "
+                                f"for value {repr(raw_value)}")
+                values.append(converted)
 
         yield tuple(values)
+
+    logger.debug(f"parse_nemweb_csv: yielded {row_count} tuples")
 
 
 def _convert_value(value, spark_type):
