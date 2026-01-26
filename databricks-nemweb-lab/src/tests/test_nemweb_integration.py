@@ -125,8 +125,9 @@ class TestNemwebFetch:
         assert "DISPATCHREGIONSUM" in TABLE_CONFIG
         config = TABLE_CONFIG["DISPATCHREGIONSUM"]
 
-        assert config["folder"] == "Dispatch_SCADA"
-        assert config["file_prefix"] == "DISPATCHSCADA"
+        assert config["folder"] == "DispatchIS_Reports"
+        assert config["file_prefix"] == "DISPATCHIS"
+        assert config["record_type"] == "DISPATCH,REGIONSUM"
 
     def test_fetch_with_retry_404(self):
         """Test that 404 errors are raised immediately (not retried)."""
