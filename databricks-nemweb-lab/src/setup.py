@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name="nemweb-datasource",
-    version="1.2.0",
+    version="1.3.0",
     description="Custom PySpark data source for AEMO NEMWEB electricity market data",
     py_modules=[
         "nemweb_datasource",

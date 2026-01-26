@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Version for debugging - increment when making changes
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 
 def get_version() -> str:
@@ -451,9 +451,6 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
     """
     from pyspark.sql.types import TimestampType
 
-    # Print version for debugging (shows in worker logs)
-    print(f"NEMWEB parse_nemweb_csv v{__version__} - processing {len(data)} rows")
-
     field_names = [field.name for field in schema.fields]
     field_types = {field.name: field.dataType for field in schema.fields}
 
@@ -461,51 +458,64 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
     timestamp_cols = {name for name, dtype in field_types.items()
                      if isinstance(dtype, TimestampType)}
 
-    logger.debug(f"parse_nemweb_csv: parsing {len(data)} rows with {len(field_names)} fields")
-    logger.debug(f"Schema fields: {field_names}")
-    logger.debug(f"Timestamp columns: {timestamp_cols}")
-
-    # Log first row's raw values for debugging
-    if data and logger.isEnabledFor(logging.DEBUG):
-        first_row = data[0]
-        logger.debug(f"First row sample - raw values:")
-        for name in field_names[:5]:  # First 5 fields
-            raw_val = first_row.get(name)
-            logger.debug(f"  {name}: {repr(raw_val)} (type: {type(raw_val).__name__})")
-
-    row_count = 0
     for row in data:
-        row_count += 1
-        values = []
-        for idx, name in enumerate(field_names):
-            raw_value = row.get(name)
+        try:
+            values = []
+            for name in field_names:
+                raw_value = row.get(name)
 
-            if raw_value is None or raw_value == "":
-                values.append(None)
-            else:
-                converted = _convert_value(raw_value, field_types[name])
+                if raw_value is None or raw_value == "":
+                    values.append(None)
+                else:
+                    converted = _convert_value(raw_value, field_types[name])
 
-                # CRITICAL: Validate timestamp columns - Spark will crash if not datetime or None
-                if name in timestamp_cols:
-                    if converted is not None and not isinstance(converted, datetime):
-                        # This should never happen, but catch it if it does
-                        error_msg = (
-                            f"NEMWEB v{__version__} TIMESTAMP VALIDATION FAILED - "
-                            f"Row {row_count}, column {name}: "
-                            f"expected datetime, got {type(converted).__name__} = {repr(converted)} "
-                            f"(raw value: {repr(raw_value)})"
-                        )
-                        # Use print() for worker visibility (logger may not show)
-                        print(error_msg)
-                        logger.error(error_msg)
-                        # Force to None to prevent Spark crash
-                        converted = None
+                    # FINAL TIMESTAMP VALIDATION - must be datetime or None
+                    if name in timestamp_cols:
+                        if converted is not None:
+                            # Use type().__name__ check to be absolutely certain
+                            if type(converted).__name__ != 'datetime':
+                                converted = None
 
-                values.append(converted)
+                    values.append(converted)
 
-        yield tuple(values)
+            yield tuple(values)
 
-    logger.debug(f"parse_nemweb_csv: yielded {row_count} tuples")
+        except Exception as e:
+            # Skip problematic rows rather than crash
+            logger.warning(f"Skipping row due to error: {e}")
+            continue
+
+
+def _convert_timestamp(value: str) -> Optional[datetime]:
+    """
+    Convert string to datetime. Returns None if parsing fails.
+
+    CRITICAL: This function MUST return datetime.datetime or None.
+    Spark's Arrow serializer will crash with AssertionError otherwise.
+    """
+    if not value:
+        return None
+
+    # NEMWEB timestamp formats
+    formats = [
+        "%Y/%m/%d %H:%M:%S",      # 2024/01/01 00:05:00
+        "%Y-%m-%d %H:%M:%S",      # 2024-01-01 00:05:00
+        "%Y/%m/%d %H:%M",         # 2024/01/01 00:05 (no seconds)
+        "%Y-%m-%d %H:%M",         # 2024-01-01 00:05 (no seconds)
+        "%d/%m/%Y %H:%M:%S",      # 01/01/2024 00:05:00 (AU format)
+        "%d/%m/%Y %H:%M",         # 01/01/2024 00:05 (AU format, no seconds)
+    ]
+
+    for fmt in formats:
+        try:
+            result = datetime.strptime(value, fmt)
+            # Final type check - be absolutely sure
+            if type(result).__name__ == 'datetime':
+                return result
+        except (ValueError, TypeError):
+            continue
+
+    return None
 
 
 def _convert_value(value, spark_type):
@@ -522,61 +532,43 @@ def _convert_value(value, spark_type):
     if value is None or value == "":
         return None
 
-    # Ensure we have a string to work with
-    if not isinstance(value, str):
-        value = str(value)
+    # Convert to string and strip whitespace
+    try:
+        str_value = str(value).strip()
+    except Exception:
+        return None
 
-    # Strip whitespace - critical for timestamp parsing
-    value = value.strip()
-
-    if value == "":
+    if str_value == "":
         return None
 
     if isinstance(spark_type, StringType):
-        return value
+        return str_value
 
     elif isinstance(spark_type, DoubleType):
         try:
-            return float(value)
+            return float(str_value)
         except (ValueError, TypeError):
-            logger.warning(f"Could not convert to double: {value}")
             return None
 
     elif isinstance(spark_type, IntegerType):
         try:
-            return int(float(value))
+            return int(float(str_value))
         except (ValueError, TypeError):
-            logger.warning(f"Could not convert to integer: {value}")
             return None
 
     elif isinstance(spark_type, TimestampType):
-        # CRITICAL: Must return datetime.datetime or None - Spark requires this
-        # NEMWEB timestamp formats (various formats observed in AEMO data)
-        timestamp_formats = [
-            "%Y/%m/%d %H:%M:%S",      # 2024/01/01 00:05:00
-            "%Y-%m-%d %H:%M:%S",      # 2024-01-01 00:05:00
-            "%Y/%m/%d %H:%M",         # 2024/01/01 00:05 (no seconds)
-            "%Y-%m-%d %H:%M",         # 2024-01-01 00:05 (no seconds)
-            "%d/%m/%Y %H:%M:%S",      # 01/01/2024 00:05:00 (AU format)
-            "%d/%m/%Y %H:%M",         # 01/01/2024 00:05 (AU format, no seconds)
-        ]
-
-        # Try each format
-        for fmt in timestamp_formats:
-            try:
-                result = datetime.strptime(value, fmt)
-                # Verify it's actually a datetime (defensive)
-                if isinstance(result, datetime):
-                    return result
-            except (ValueError, TypeError):
-                continue
-
-        # If we get here, no format worked - MUST return None
-        logger.warning(f"Could not parse timestamp value: {repr(value)}")
-        return None
+        # Use dedicated timestamp converter
+        result = _convert_timestamp(str_value)
+        # FINAL SAFETY CHECK - absolutely must be datetime or None
+        if result is None:
+            return None
+        if type(result).__name__ != 'datetime':
+            # This should never happen, but if it does, return None
+            return None
+        return result
 
     else:
-        return str(value)
+        return str_value
 
 
 def get_nemweb_schema(table: str) -> "StructType":
