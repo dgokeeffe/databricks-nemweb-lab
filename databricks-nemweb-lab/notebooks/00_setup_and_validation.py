@@ -2,7 +2,7 @@
 # MAGIC %md
 # MAGIC # Lab Setup and Validation
 # MAGIC
-# MAGIC **Time:** ~5 minutes (validation) + ~5 minutes (data download)
+# MAGIC **Time:** ~10 minutes
 # MAGIC
 # MAGIC This notebook validates your environment and pre-loads NEMWEB data for the lab exercises.
 # MAGIC
@@ -10,8 +10,7 @@
 # MAGIC 1. Validates cluster runtime (Spark 4.0+ required)
 # MAGIC 2. Tests network connectivity to NEMWEB
 # MAGIC 3. Builds and installs the lab package
-# MAGIC 4. Downloads NEMWEB data to UC Volume (parallel)
-# MAGIC 5. Loads data into Delta table using custom data source
+# MAGIC 4. Downloads and loads data using the Arrow custom data source
 # MAGIC
 # MAGIC ## Requirements
 # MAGIC - **Serverless compute** (recommended) or DBR 15.4+ cluster
@@ -26,7 +25,6 @@
 # COMMAND ----------
 
 # Lab configuration - modify CATALOG if needed for your workspace
-# Common options: "main", "hive_metastore", or your personal catalog
 CATALOG = "main"
 SCHEMA = "nemweb_lab"
 RAW_TABLE = "nemweb_raw"
@@ -73,22 +71,28 @@ if major_version < 4:
         "Use Serverless compute or DBR 15.4+ cluster."
     )
 
-print("✓ Spark version compatible")
+print("Runtime compatible")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 3. Validate Python Data Source API
+# MAGIC ## 3. Validate Python Data Source API and PyArrow
 
 # COMMAND ----------
 
 try:
     from pyspark.sql.datasource import DataSource, DataSourceReader
-    print("✓ Python Data Source API available")
+    print("Python Data Source API available")
 except ImportError as e:
     raise ImportError(
         "Python Data Source API not available. Requires DBR 15.4+ / Spark 4.0+"
     ) from e
+
+try:
+    import pyarrow as pa
+    print(f"PyArrow version: {pa.__version__}")
+except ImportError as e:
+    raise ImportError("PyArrow not available - required for Arrow data source") from e
 
 # COMMAND ----------
 
@@ -105,7 +109,7 @@ NEMWEB_URL = "https://www.nemweb.com.au/REPORTS/CURRENT/"
 try:
     request = urllib.request.Request(NEMWEB_URL, headers={"User-Agent": "DatabricksLab/1.0"})
     with urllib.request.urlopen(request, timeout=10) as response:
-        print(f"✓ NEMWEB connectivity verified (HTTP {response.status})")
+        print(f"NEMWEB connectivity verified (HTTP {response.status})")
 except urllib.error.URLError as e:
     raise RuntimeError(f"Cannot connect to NEMWEB: {e}")
 
@@ -149,7 +153,7 @@ if not wheels:
     raise FileNotFoundError("No wheel found after build")
 
 latest_wheel = sorted(wheels)[-1]
-print(f"✓ Built: {os.path.basename(latest_wheel)}")
+print(f"Built: {os.path.basename(latest_wheel)}")
 
 # COMMAND ----------
 
@@ -164,7 +168,7 @@ dbutils.library.restartPython()
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 6. Verify Package Installation
+# MAGIC ## 6. Verify Package and Register Data Source
 
 # COMMAND ----------
 
@@ -174,15 +178,14 @@ spark = SparkSession.builder.getOrCreate()
 
 # Verify imports
 from nemweb_utils import get_version, get_nem_regions
-from nemweb_ingest import download_nemweb_files
-from nemweb_datasource import NemwebDataSource
+from nemweb_datasource_arrow import NemwebArrowDataSource
 
-print(f"✓ Package version: {get_version()}")
-print(f"✓ NEM regions: {get_nem_regions()}")
+print(f"Package version: {get_version()}")
+print(f"NEM regions: {get_nem_regions()}")
 
-# Register data source
-spark.dataSource.register(NemwebDataSource)
-print("✓ Custom data source registered")
+# Register Arrow data source
+spark.dataSource.register(NemwebArrowDataSource)
+print("Arrow data source registered (format: 'nemweb_arrow')")
 
 # COMMAND ----------
 
@@ -208,8 +211,8 @@ spark.sql(f"CREATE CATALOG IF NOT EXISTS {CATALOG}")
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
 spark.sql(f"CREATE VOLUME IF NOT EXISTS {CATALOG}.{SCHEMA}.{VOLUME_NAME}")
 
-print(f"✓ Schema: {CATALOG}.{SCHEMA}")
-print(f"✓ Volume: {VOLUME_PATH}")
+print(f"Schema: {CATALOG}.{SCHEMA}")
+print(f"Volume: {VOLUME_PATH}")
 
 # COMMAND ----------
 
@@ -223,7 +226,7 @@ table_exists = spark.catalog.tableExists(TABLE_PATH)
 if table_exists:
     row_count = spark.table(TABLE_PATH).count()
     print(f"Table {RAW_TABLE} exists with {row_count:,} rows")
-    print("Set FORCE_RELOAD = True to reload")
+    print("Set FORCE_RELOAD = True below to reload")
     FORCE_RELOAD = False
 else:
     print(f"Table {RAW_TABLE} does not exist - will load data")
@@ -233,168 +236,39 @@ else:
 
 # MAGIC %md
 # MAGIC ---
-# MAGIC ## 9. Download NEMWEB Files to UC Volume
+# MAGIC ## 9. Download and Load Data Using Arrow Data Source
 # MAGIC
-# MAGIC Downloads ZIP files in parallel (8 threads) to the UC Volume.
-
-# COMMAND ----------
-
-if FORCE_RELOAD or not table_exists:
-    from nemweb_ingest import download_nemweb_files
-
-    print(f"Downloading NEMWEB data: {START_DATE} to {END_DATE}")
-    print("=" * 50)
-
-    results = download_nemweb_files(
-        volume_path=VOLUME_PATH,
-        table="DISPATCHREGIONSUM",
-        start_date=START_DATE,
-        end_date=END_DATE,
-        max_workers=8,
-        skip_existing=True
-    )
-else:
-    print("✓ Skipping download - data exists")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 10. Load Data Using Custom Data Source
-# MAGIC
-# MAGIC Reads from Volume files using the custom PySpark data source.
+# MAGIC The Arrow data source handles everything in one step:
+# MAGIC - Downloads ZIP files to UC Volume (parallel, 8 threads)
+# MAGIC - Parses NEMWEB multi-record CSV format
+# MAGIC - Returns PyArrow RecordBatch for zero-copy transfer to Spark
+# MAGIC - Works on both Serverless and Classic compute
 
 # COMMAND ----------
 
 if FORCE_RELOAD or not table_exists:
     import time
-    import zipfile
-    import io
-    import csv
-    import os
-    from datetime import datetime as dt
 
     start_time = time.time()
 
-    print("Loading data from Volume...")
+    print(f"Loading NEMWEB data: {START_DATE} to {END_DATE}")
     print("=" * 50)
+    print("This will download files to Volume and load into Delta table.")
+    print("Downloads are parallel (8 threads) and skip existing files.")
+    print()
 
-    # Parse files on driver (avoids Spark Connect serialization issues)
-    def parse_nemweb_zip(file_path: str) -> list[tuple]:
-        """Parse a NEMWEB ZIP file and return list of tuples."""
-        rows = []
-        record_type = "DISPATCH,REGIONSUM"
-
-        with open(file_path, 'rb') as f:
-            zip_data = io.BytesIO(f.read())
-
-        with zipfile.ZipFile(zip_data) as zf:
-            for name in zf.namelist():
-                # Handle nested ZIPs
-                if name.lower().endswith(".zip"):
-                    with zf.open(name) as nested_file:
-                        nested_data = io.BytesIO(nested_file.read())
-                        with zipfile.ZipFile(nested_data) as nested_zf:
-                            for nested_name in nested_zf.namelist():
-                                if nested_name.upper().endswith(".CSV"):
-                                    with nested_zf.open(nested_name) as csv_file:
-                                        rows.extend(_parse_csv(csv_file, record_type))
-                elif name.upper().endswith(".CSV"):
-                    with zf.open(name) as csv_file:
-                        rows.extend(_parse_csv(csv_file, record_type))
-
-        return rows
-
-    def _parse_csv(csv_file, record_type: str) -> list[tuple]:
-        """Parse NEMWEB multi-record CSV to tuples."""
-        text = csv_file.read().decode("utf-8")
-        rows = []
-        headers = None
-
-        for parts in csv.reader(io.StringIO(text)):
-            if not parts:
-                continue
-            row_type = parts[0].strip().upper()
-
-            if row_type == "I" and len(parts) > 2:
-                if f"{parts[1]},{parts[2]}" == record_type:
-                    headers = parts[4:]
-
-            elif row_type == "D" and headers and len(parts) > 2:
-                if f"{parts[1]},{parts[2]}" == record_type:
-                    values = parts[4:]
-                    row_dict = dict(zip(headers, values))
-
-                    # Keep timestamp as string - cast later in Spark
-                    ts_val = row_dict.get("SETTLEMENTDATE", "").strip()
-                    # Normalize to standard format
-                    if ts_val and "/" in ts_val:
-                        ts_val = ts_val.replace("/", "-")
-
-                    def to_float(v):
-                        try:
-                            return float(v) if v else None
-                        except:
-                            return None
-
-                    rows.append((
-                        ts_val if ts_val else None,  # Keep as string
-                        row_dict.get("RUNNO"),
-                        row_dict.get("REGIONID"),
-                        row_dict.get("DISPATCHINTERVAL"),
-                        row_dict.get("INTERVENTION"),
-                        to_float(row_dict.get("TOTALDEMAND")),
-                        to_float(row_dict.get("AVAILABLEGENERATION")),
-                        to_float(row_dict.get("AVAILABLELOAD")),
-                        to_float(row_dict.get("DEMANDFORECAST")),
-                        to_float(row_dict.get("DISPATCHABLEGENERATION")),
-                        to_float(row_dict.get("DISPATCHABLELOAD")),
-                        to_float(row_dict.get("NETINTERCHANGE")),
-                    ))
-
-        return rows
-
-    # Get list of ZIP files
-    table_dir = os.path.join(VOLUME_PATH, "dispatchregionsum")
-    zip_files = sorted([
-        os.path.join(table_dir, f)
-        for f in os.listdir(table_dir)
-        if f.endswith('.zip')
-    ])
-
-    print(f"Parsing {len(zip_files)} ZIP files...")
-
-    # Parse all files
-    all_rows = []
-    for i, zf in enumerate(zip_files):
-        all_rows.extend(parse_nemweb_zip(zf))
-        if (i + 1) % 30 == 0:
-            print(f"  Processed {i + 1}/{len(zip_files)} files...")
-
-    print(f"Parsed {len(all_rows):,} rows total")
-
-    # Create DataFrame with string schema first (avoids Spark Connect datetime issues)
-    from pyspark.sql.types import StructType, StructField, StringType, DoubleType
-
-    string_schema = StructType([
-        StructField("SETTLEMENTDATE", StringType(), True),  # String first, cast later
-        StructField("RUNNO", StringType(), True),
-        StructField("REGIONID", StringType(), True),
-        StructField("DISPATCHINTERVAL", StringType(), True),
-        StructField("INTERVENTION", StringType(), True),
-        StructField("TOTALDEMAND", DoubleType(), True),
-        StructField("AVAILABLEGENERATION", DoubleType(), True),
-        StructField("AVAILABLELOAD", DoubleType(), True),
-        StructField("DEMANDFORECAST", DoubleType(), True),
-        StructField("DISPATCHABLEGENERATION", DoubleType(), True),
-        StructField("DISPATCHABLELOAD", DoubleType(), True),
-        StructField("NETINTERCHANGE", DoubleType(), True),
-    ])
-
-    df = spark.createDataFrame(all_rows, schema=string_schema)
-
-    # Cast timestamp column in Spark (not Python)
-    from pyspark.sql.functions import to_timestamp
-    df = df.withColumn("SETTLEMENTDATE", to_timestamp("SETTLEMENTDATE", "yyyy-MM-dd HH:mm:ss"))
+    # Read using Arrow data source with auto_download
+    # This downloads files to volume first, then reads them
+    df = (spark.read
+          .format("nemweb_arrow")
+          .option("volume_path", VOLUME_PATH)
+          .option("table", "DISPATCHREGIONSUM")
+          .option("start_date", START_DATE)
+          .option("end_date", END_DATE)
+          .option("auto_download", "true")
+          .option("max_workers", "8")
+          .option("skip_existing", "true")
+          .load())
 
     # Write to Delta
     if table_exists:
@@ -405,15 +279,16 @@ if FORCE_RELOAD or not table_exists:
     elapsed = time.time() - start_time
     row_count = spark.table(TABLE_PATH).count()
 
+    print()
     print("=" * 50)
-    print(f"✓ Loaded {row_count:,} rows in {elapsed:.1f}s")
+    print(f"Loaded {row_count:,} rows in {elapsed:.1f}s")
 else:
-    print("✓ Using existing data")
+    print("Using existing data")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 11. Verify Loaded Data
+# MAGIC ## 10. Verify Loaded Data
 
 # COMMAND ----------
 
@@ -435,6 +310,11 @@ stats = df.agg(
 
 print(f"Date range: {stats['min_date']} to {stats['max_date']}")
 print(f"Regions:    {stats['regions']}")
+print()
+
+# Verify timestamp type is correct
+print("Schema:")
+df.printSchema()
 print()
 
 print("Sample data:")
@@ -461,6 +341,12 @@ Data:
   Table:    {TABLE_PATH}
   Rows:     {spark.table(TABLE_PATH).count():,}
 
+Arrow Data Source Features:
+  - Auto-download to UC Volume (parallel, skip existing)
+  - Zero-copy transfer via PyArrow RecordBatch
+  - Native timestamp handling
+  - Works on Serverless and Classic compute
+
 Next Steps:
   1. Open 01_custom_source_exercise.py
   2. Follow exercises in order
@@ -485,6 +371,6 @@ print("=" * 60)
 # MAGIC - Check src directory exists
 # MAGIC
 # MAGIC **Data loading slow**
-# MAGIC - Downloads are parallel (8 threads)
-# MAGIC - Skip existing files with `skip_existing=True`
+# MAGIC - Downloads are parallel (8 threads by default)
+# MAGIC - Existing files are skipped automatically
 # MAGIC - Reduce date range for faster loading
