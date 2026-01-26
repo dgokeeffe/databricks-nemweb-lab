@@ -14,6 +14,7 @@
 # MAGIC 4. Implement dead letter queues for unrecoverable errors
 # MAGIC
 # MAGIC ## Prerequisites
+# MAGIC - Run **00_setup_and_validation** notebook first (installs package)
 # MAGIC - Completed Exercises 1-3
 # MAGIC - Understanding of Spark task retry behavior
 
