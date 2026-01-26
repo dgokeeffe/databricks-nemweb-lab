@@ -26,6 +26,7 @@
 
 from pyspark.sql.functions import col, current_timestamp, when
 from pyspark.sql import Row
+from databricks.sdk.runtime import spark, display
 import time
 
 # Must match the values from 00_setup_and_validation.py
@@ -105,12 +106,14 @@ spark.sql("DROP TABLE IF EXISTS nemweb_liquid_clustered")
 # TODO 3b.1: Add .clusterBy() with columns that queries filter on most
 # Look at the benchmark queries below - what columns appear in WHERE clauses?
 # Docs: https://docs.databricks.com/en/delta/clustering.html
+#
+# Add .clusterBy("column1", "column2") before .saveAsTable()
 
-nemweb_data.write \
-    .format("delta") \
-    .option("delta.enableChangeDataFeed", "false") \
-    # Add .clusterBy(...) here
-    .saveAsTable("nemweb_liquid_clustered")
+(nemweb_data.write
+    .format("delta")
+    .option("delta.enableChangeDataFeed", "false")
+    # TODO: Add .clusterBy(...) here
+    .saveAsTable("nemweb_liquid_clustered"))
 
 print("Created: nemweb_liquid_clustered")
 

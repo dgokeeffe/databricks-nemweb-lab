@@ -25,6 +25,8 @@
 
 # COMMAND ----------
 
+from databricks.sdk.runtime import spark, display
+
 # Must match the values from 00_setup_and_validation.py
 SOURCE_CATALOG = "main"
 SOURCE_SCHEMA = "nemweb_lab"
