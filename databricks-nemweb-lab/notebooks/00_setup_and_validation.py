@@ -88,7 +88,7 @@ except urllib.error.URLError as e:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 4. Lab Source Code Installation
+# MAGIC ## 4. Lab Source Code Setup
 # MAGIC
 # MAGIC Add the src folder to Python path so modules are importable.
 # MAGIC
@@ -96,7 +96,7 @@ except urllib.error.URLError as e:
 
 # COMMAND ----------
 
-# Compute the workspace path to src folder
+# Compute the workspace path to src folder and add to sys.path
 import os
 import sys
 
@@ -111,56 +111,25 @@ src_path = f"/Workspace{repo_root}/src"
 print(f"Source path: {src_path}")
 
 # Verify the path exists
-import os.path
 if os.path.exists(src_path):
     print(f"✓ Path exists")
+    # List contents to verify
+    print(f"  Contents: {os.listdir(src_path)}")
 else:
-    print(f"⚠ Path does not exist - check your workspace structure")
-    # Try alternative path for Repos
-    alt_path = f"/Workspace/Repos{notebook_path.replace('/Repos', '').rsplit('/', 2)[0]}/src"
-    print(f"  Trying alternative: {alt_path}")
-    if os.path.exists(alt_path):
-        src_path = alt_path
-        print(f"✓ Alternative path exists")
+    raise FileNotFoundError(f"Source path not found: {src_path}")
 
-# Add to sys.path for driver imports
+# Add to sys.path
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
     print(f"✓ Added to sys.path")
 
-# COMMAND ----------
-
-# Also pip install for worker availability (custom data sources run on workers)
-import subprocess
-result = subprocess.run(
-    [sys.executable, "-m", "pip", "install", "-e", src_path, "-q"],
-    capture_output=True, text=True
-)
-if result.returncode == 0:
-    print("✓ Package installed for workers")
-else:
-    print(f"⚠ pip install failed (may still work via sys.path):")
-    print(f"  {result.stderr}")
-
-# COMMAND ----------
-
-# Restart Python to pick up changes
-dbutils.library.restartPython()
+# Store path for later cells (survives across cells in same session)
+spark.conf.set("nemweb.src_path", src_path)
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## 5. Test Import of Lab Modules
-
-# COMMAND ----------
-
-# Re-add src to path after restart (restartPython clears sys.path modifications)
-import os, sys
-notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
-repo_root = str(os.path.dirname(os.path.dirname(notebook_path)))
-src_path = f"/Workspace{repo_root}/src"
-if src_path not in sys.path:
-    sys.path.insert(0, src_path)
 
 # COMMAND ----------
 
@@ -173,7 +142,7 @@ try:
 
 except ImportError as e:
     print(f"⚠ Could not import lab modules: {e}")
-    print("  Re-run cells 4.1-4.3 to install the package")
+    print("  Re-run cell 4 to add src to sys.path")
 
 # COMMAND ----------
 
@@ -188,7 +157,7 @@ try:
     print("✓ NEMWEB custom data source registered")
 except ImportError as e:
     print(f"⚠ Could not register data source: {e}")
-    print("  Re-run cells 4.1-4.3 to install the package")
+    print("  Re-run cell 4 to add src to sys.path")
 except Exception as e:
     print(f"⚠ Registration error: {e}")
     print("  You'll register it manually in exercise 01")
