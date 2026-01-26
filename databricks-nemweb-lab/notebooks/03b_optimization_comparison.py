@@ -275,13 +275,33 @@ print(f"Partitioned:       {result_partitioned_1['elapsed_seconds']:.3f}s ({resu
 # TODO 3b.3b: Write queries that filter by a single region
 # Get daily averages for one region across all dates
 # This tests how well each approach handles non-time-based filters
+#
+# Requirements:
+#   - Filter WHERE region_id = 'NSW1'
+#   - Group by DATE(settlement_date)
+#   - Calculate AVG(total_demand_mw) and AVG(rrp)
+#   - Order by date
+#
+# Hint: Use DATE(settlement_date) to extract the date part
 
 query_liquid_2 = """
--- Your query filtering nemweb_liquid_clustered by region_id
+SELECT DATE(settlement_date) as date,
+       AVG(total_demand_mw) as avg_demand,
+       AVG(rrp) as avg_price
+FROM nemweb_liquid_clustered
+WHERE region_id = 'NSW1'
+GROUP BY DATE(settlement_date)
+ORDER BY date
 """
 
 query_partitioned_2 = """
--- Same query on nemweb_partitioned
+SELECT DATE(settlement_date) as date,
+       AVG(total_demand_mw) as avg_demand,
+       AVG(rrp) as avg_price
+FROM nemweb_partitioned
+WHERE region_id = 'NSW1'
+GROUP BY DATE(settlement_date)
+ORDER BY date
 """
 
 print("=" * 60)
@@ -359,19 +379,36 @@ summary_df.show(truncate=False)
 # MAGIC %md
 # MAGIC ## Part 4: Analysis Questions
 # MAGIC
+# MAGIC ### Understanding the Results
+# MAGIC
+# MAGIC Before answering, consider what each query tests:
+# MAGIC
+# MAGIC | Query | Filter Type | What It Tests |
+# MAGIC |-------|-------------|---------------|
+# MAGIC | Q1: Single Day | Time-based (`settlement_date`) | Partition pruning vs. cluster data skipping |
+# MAGIC | Q2: Single Region | Dimension-based (`region_id`) | How well each handles non-partition filters |
+# MAGIC | Q3: Price Spikes | Value-based (`rrp > 300`) | Neither is optimized for this - full scan |
+# MAGIC
+# MAGIC **Key insight:** Liquid clustering can skip data for ANY clustering key, while partitioning
+# MAGIC only helps when you filter on the partition columns.
+# MAGIC
 # MAGIC ### TODO 3b.4: Answer these questions based on your results
 # MAGIC
 # MAGIC 1. **Which approach performed better for time-based queries (Q1)?**
 # MAGIC    - Your answer:
+# MAGIC    - *Hint: Both should perform similarly since both optimize for time-based access*
 # MAGIC
 # MAGIC 2. **Which approach performed better for region-based queries (Q2)?**
 # MAGIC    - Your answer:
+# MAGIC    - *Hint: Liquid clustering includes region_id as a clustering key*
 # MAGIC
 # MAGIC 3. **Why did neither approach help with Q3 (price spikes)?**
 # MAGIC    - Your answer:
+# MAGIC    - *Hint: What column are we filtering on? Is it a clustering/partition key?*
 # MAGIC
 # MAGIC 4. **For NEMWEB data, which approach would you recommend and why?**
 # MAGIC    - Your answer:
+# MAGIC    - *Consider: What queries will users typically run? Time-based? Region-based? Both?*
 
 # COMMAND ----------
 

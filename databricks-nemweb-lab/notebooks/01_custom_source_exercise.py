@@ -166,6 +166,48 @@ for field in schema.fields:
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ### Checkpoint 1: Validate Schema
+# MAGIC
+# MAGIC Run this cell to check your schema before moving on.
+
+# COMMAND ----------
+
+def check_schema():
+    """Validate Part 1 schema definition."""
+    schema = get_dispatchregionsum_schema()
+    required_fields = {
+        "SETTLEMENTDATE": "TimestampType",
+        "REGIONID": "StringType",
+        "TOTALDEMAND": "DoubleType",
+        "AVAILABLEGENERATION": "DoubleType",
+        "NETINTERCHANGE": "DoubleType",
+    }
+
+    missing = []
+    for field_name, expected_type in required_fields.items():
+        field = next((f for f in schema.fields if f.name == field_name), None)
+        if not field:
+            missing.append(f"Missing field: {field_name}")
+        elif expected_type not in str(field.dataType):
+            missing.append(f"{field_name}: expected {expected_type}, got {field.dataType}")
+
+    if len(schema.fields) < 12:
+        missing.append(f"Schema has {len(schema.fields)} fields, expected 12")
+
+    if missing:
+        print("Part 1 Issues:")
+        for m in missing:
+            print(f"  - {m}")
+        return False
+    else:
+        print("Part 1 COMPLETE - Schema is correct!")
+        return True
+
+check_schema()
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Part 2: Add Partitioning and Data Reading (5 minutes)
 # MAGIC
 # MAGIC Spark achieves parallelism by dividing work into **partitions**. Each partition
@@ -285,21 +327,25 @@ class NemwebReader(DataSourceReader):
         TODO 1.2b: Use the helper functions to fetch and parse data.
 
         Steps:
-        1. Call fetch_nemweb_data() with the partition's region and dates
-        2. Call parse_nemweb_csv() to convert rows to tuples
-        3. Yield each tuple
+        1. Call fetch_nemweb_data() with these parameters:
+           - table="DISPATCHREGIONSUM"
+           - region=partition.region
+           - start_date=partition.start_date
+           - end_date=partition.end_date
 
-        Example:
-            data = fetch_nemweb_data(
-                table="DISPATCHREGIONSUM",
-                region=partition.region,
-                start_date=partition.start_date,
-                end_date=partition.end_date
-            )
-            for row_tuple in parse_nemweb_csv(data, self.schema):
-                yield row_tuple
+        2. Call parse_nemweb_csv(data, self.schema) to convert to tuples
+
+        3. Use a for loop to yield each tuple from the result
+
+        Hint: The pattern is similar to HelloWorldReader.read() above,
+        but instead of generating data, you're fetching and parsing it.
+
+        Docs: https://docs.databricks.com/en/pyspark/datasources.html
         """
-        # TODO: Implement this method using the helper functions
+        # TODO: Implement this method
+        # Step 1: Fetch data using fetch_nemweb_data(...)
+        # Step 2: Parse with parse_nemweb_csv(...)
+        # Step 3: Yield each tuple
         pass
 
 
@@ -309,8 +355,60 @@ reader = NemwebReader(schema, test_options)
 partitions = reader.partitions()
 
 print(f"Created {len(partitions)} partitions (expected: 3)")
-for p in partitions:
-    print(f"  - Region: {p.region}")
+if partitions:
+    for p in partitions:
+        print(f"  - Region: {p.region}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Checkpoint 2: Validate Partitions and Reading
+# MAGIC
+# MAGIC Run this cell to verify your partitions() and read() methods.
+
+# COMMAND ----------
+
+def check_partitions_and_read():
+    """Validate Part 2 partition and read implementation."""
+    issues = []
+
+    # Check partitions
+    reader = NemwebReader(schema, {"regions": "NSW1,VIC1"})
+    partitions = reader.partitions()
+
+    if partitions is None:
+        issues.append("partitions() returns None - did you forget 'return partitions'?")
+    elif len(partitions) != 2:
+        issues.append(f"partitions(): expected 2 for 2 regions, got {len(partitions)}")
+    else:
+        # Check partition attributes
+        p = partitions[0]
+        if not hasattr(p, 'region'):
+            issues.append("Partition missing 'region' attribute")
+
+    # Check read method (with sample data)
+    if not issues:
+        test_partition = NemwebPartition("NSW1", "2024-01-01", "2024-01-01")
+        try:
+            # Get first tuple from read()
+            result = list(reader.read(test_partition))
+            if not result:
+                issues.append("read() returned empty - check fetch_nemweb_data() call")
+            elif len(result[0]) != 12:
+                issues.append(f"read() tuple has {len(result[0])} fields, expected 12")
+        except Exception as e:
+            issues.append(f"read() error: {e}")
+
+    if issues:
+        print("Part 2 Issues:")
+        for i in issues:
+            print(f"  - {i}")
+        return False
+    else:
+        print("Part 2 COMPLETE - Partitions and reading work!")
+        return True
+
+check_partitions_and_read()
 
 # COMMAND ----------
 
@@ -393,37 +491,79 @@ display(df)
 # COMMAND ----------
 
 def validate_implementation():
-    """Validate the custom data source implementation."""
-    errors = []
+    """Validate the complete custom data source implementation."""
+    print("=" * 60)
+    print("FINAL VALIDATION")
+    print("=" * 60)
 
-    # Check schema
+    checks = {
+        "Part 1 - Schema": False,
+        "Part 2 - Partitions": False,
+        "Part 2 - Read": False,
+        "Part 3 - DataSource.name()": False,
+        "Part 3 - DataSource.schema()": False,
+        "Part 3 - DataSource.reader()": False,
+    }
+
+    # Part 1: Schema
     schema = get_dispatchregionsum_schema()
-    if len(schema.fields) < 12:
-        errors.append(f"Schema: expected 12 fields, got {len(schema.fields)}")
-
     required = ["TOTALDEMAND", "AVAILABLEGENERATION", "NETINTERCHANGE"]
-    for field in required:
-        if field not in [f.name for f in schema.fields]:
-            errors.append(f"Schema: missing {field}")
+    schema_ok = (
+        len(schema.fields) >= 12 and
+        all(f in [field.name for field in schema.fields] for f in required)
+    )
+    checks["Part 1 - Schema"] = schema_ok
 
-    # Check partitions (3 regions = 3 partitions for single day)
+    # Part 2: Partitions
     reader = NemwebReader(schema, {"regions": "NSW1,VIC1,QLD1"})
     partitions = reader.partitions()
-    if len(partitions) != 3:
-        errors.append(f"Partitions: expected 3, got {len(partitions)}")
+    checks["Part 2 - Partitions"] = partitions is not None and len(partitions) == 3
 
-    # Check data source name
-    if NemwebDataSource.name() != "nemweb":
-        errors.append(f"DataSource.name(): expected 'nemweb', got '{NemwebDataSource.name()}'")
+    # Part 2: Read
+    if partitions:
+        try:
+            test_partition = NemwebPartition("NSW1", "2024-01-01", "2024-01-01")
+            result = list(reader.read(test_partition))
+            checks["Part 2 - Read"] = len(result) > 0 and len(result[0]) == 12
+        except:
+            pass
 
-    if errors:
-        print("Issues found:")
-        for e in errors:
-            print(f"   - {e}")
+    # Part 3: DataSource
+    try:
+        checks["Part 3 - DataSource.name()"] = NemwebDataSource.name() == "nemweb"
+    except:
+        pass
+
+    try:
+        ds = NemwebDataSource(options={})
+        checks["Part 3 - DataSource.schema()"] = len(ds.schema().fields) >= 12
+    except:
+        pass
+
+    try:
+        ds = NemwebDataSource(options={})
+        checks["Part 3 - DataSource.reader()"] = ds.reader(schema) is not None
+    except:
+        pass
+
+    # Print results
+    print()
+    for check, passed in checks.items():
+        status = "PASS" if passed else "FAIL"
+        print(f"  [{status}] {check}")
+
+    all_passed = all(checks.values())
+    print()
+    if all_passed:
+        print("=" * 60)
+        print("CONGRATULATIONS! All checks passed!")
+        print("Your custom data source fetches REAL data from NEMWEB.")
+        print("=" * 60)
     else:
-        print("All checks passed! Your data source fetches REAL data from NEMWEB.")
+        failed = [k for k, v in checks.items() if not v]
+        print(f"Some checks failed. Review: {', '.join(failed)}")
 
-    return len(errors) == 0
+    return all_passed
 
 validate_implementation()
 

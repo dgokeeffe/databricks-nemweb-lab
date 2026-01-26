@@ -66,12 +66,30 @@ from databricks.sdk.runtime import spark
 def nemweb_bronze():
     """
     TODO 2.1: Read from your custom NEMWEB data source (from Exercise 1).
-    Add an _ingested_at timestamp column.
+
+    Steps:
+    1. Use spark.read.format("nemweb") to read from your custom data source
+    2. Add .option("regions", "NSW1,QLD1,SA1,VIC1,TAS1") for all NEM regions
+    3. Add .option("start_date", ...) and .option("end_date", ...) using spark.conf.get()
+    4. Call .load() to execute the read
+    5. Add an _ingested_at column using .withColumn("_ingested_at", current_timestamp())
+
+    Hint: The pattern looks like:
+        spark.read
+        .format("...")
+        .option("key", "value")
+        .load()
+        .withColumn(...)
+
     Docs: https://docs.databricks.com/en/pyspark/datasources.html#use-a-custom-data-source
     """
     return (
         spark.read
-        # Your code here
+        .format("nemweb")  # TODO: Your custom data source from Exercise 1
+        # TODO: Add .option() calls for regions, start_date, end_date
+        # Hint: Use spark.conf.get("nemweb.start_date", "2024-01-01") for dates
+        .load()
+        # TODO: Add .withColumn("_ingested_at", current_timestamp())
     )
 
 # COMMAND ----------
@@ -94,8 +112,17 @@ def nemweb_bronze():
 )
 @dp.expect_or_drop("valid_region", "REGIONID IN ('NSW1', 'QLD1', 'SA1', 'VIC1', 'TAS1')")
 # TODO 2.2: Add 2-3 more @dp.expect_or_drop decorators for data quality
-# Consider: What makes demand data invalid? What are impossible values?
-# Docs: https://docs.databricks.com/aws/en/ldp/expectations 
+#
+# Suggested expectations to add:
+#   - "valid_demand": Demand should be positive (TOTALDEMAND > 0)
+#   - "valid_timestamp": Settlement date should not be null (SETTLEMENTDATE IS NOT NULL)
+#   - "reasonable_demand": Demand should be under 20,000 MW (Australia's max ~60GW total)
+#
+# Syntax: @dp.expect_or_drop("rule_name", "SQL_CONDITION")
+#
+# Example: @dp.expect_or_drop("positive_value", "amount > 0")
+#
+# Docs: https://docs.databricks.com/aws/en/ldp/expectations
 def nemweb_silver():
     """
     Cleanse and validate NEMWEB data.
@@ -138,7 +165,15 @@ def nemweb_silver():
 def nemweb_gold_hourly():
     """
     TODO 2.3: Add aggregations for hourly demand metrics.
-    Include: average, max, min demand, and count of intervals.
+
+    Add these aggregations inside .agg():
+    - avg("total_demand_mw").alias("avg_demand_mw")
+    - max("total_demand_mw").alias("max_demand_mw")
+    - min("total_demand_mw").alias("min_demand_mw")
+    - count("*").alias("interval_count")
+
+    Hint: Separate each aggregation with a comma.
+
     Docs: https://spark.apache.org/docs/latest/api/python/reference/pyspark.sql/functions.html#aggregate-functions
     """
     return (
@@ -146,7 +181,10 @@ def nemweb_gold_hourly():
         .withColumn("hour", expr("date_trunc('hour', settlement_date)"))
         .groupBy("region_id", "hour")
         .agg(
-            # Your aggregations here
+            # TODO: Add avg, max, min, count aggregations here
+            # Example: avg("column_name").alias("new_name"),
+            avg("total_demand_mw").alias("avg_demand_mw"),  # Keep this one as example
+            # TODO: Add max, min, count aggregations
         )
     )
 
@@ -221,15 +259,18 @@ def nemweb_gold_regional_summary():
 
 def validate_pipeline_logic():
     """Validate pipeline logic without running actual DLT."""
+    print("=" * 60)
+    print("PIPELINE VALIDATION")
+    print("=" * 60)
 
-    # Test bronze table logic
-    print("Testing bronze layer...")
-
-    # Simulate data
+    # Simulate bronze data
+    print("\n1. Testing data quality expectations...")
     test_data = [
-        ("2024-01-01 00:05:00", "NSW1", "7500.5", "8000.0", "-200.5"),
-        ("2024-01-01 00:10:00", "VIC1", "5200.3", "5500.0", "150.2"),
-        ("2024-01-01 00:10:00", "INVALID", "-100", "0", "0"),  # Should be dropped
+        ("2024-01-01 00:05:00", "NSW1", "7500.5", "8000.0", "-200.5"),   # Valid
+        ("2024-01-01 00:10:00", "VIC1", "5200.3", "5500.0", "150.2"),    # Valid
+        ("2024-01-01 00:10:00", "INVALID", "1000", "1200", "0"),         # Invalid region
+        ("2024-01-01 00:15:00", "SA1", "-500", "2000", "100"),           # Negative demand
+        (None, "QLD1", "6000.0", "6500.0", "-50.0"),                     # Null timestamp
     ]
 
     df = spark.createDataFrame(test_data, [
@@ -237,16 +278,50 @@ def validate_pipeline_logic():
         "AVAILABLEGENERATION", "NETINTERCHANGE"
     ])
 
-    print(f"  Input rows: {df.count()}")
+    print(f"   Input rows: {df.count()}")
 
-    # Apply silver transformations
-    silver_df = (df
-        .filter(col("REGIONID").isin("NSW1", "QLD1", "SA1", "VIC1", "TAS1"))
-        .filter(col("TOTALDEMAND").cast("double") > 0)
+    # Test expectation: valid_region
+    valid_regions = df.filter(col("REGIONID").isin("NSW1", "QLD1", "SA1", "VIC1", "TAS1"))
+    print(f"   After valid_region check: {valid_regions.count()} rows")
+
+    # Test expectation: valid_demand (if implemented)
+    valid_demand = valid_regions.filter(col("TOTALDEMAND").cast("double") > 0)
+    print(f"   After valid_demand check: {valid_demand.count()} rows")
+
+    # Test expectation: valid_timestamp (if implemented)
+    valid_ts = valid_demand.filter(col("SETTLEMENTDATE").isNotNull())
+    print(f"   After valid_timestamp check: {valid_ts.count()} rows")
+
+    print(f"\n   Expected final rows: 2 (NSW1 and VIC1)")
+    print(f"   Rows dropped by quality checks: {df.count() - valid_ts.count()}")
+
+    # Test aggregations
+    print("\n2. Testing gold layer aggregations...")
+    agg_df = (valid_ts
+        .select(
+            col("REGIONID").alias("region_id"),
+            col("TOTALDEMAND").cast("double").alias("total_demand_mw")
+        )
+        .groupBy("region_id")
+        .agg(
+            avg("total_demand_mw").alias("avg_demand"),
+            max("total_demand_mw").alias("max_demand"),
+            count("*").alias("count")
+        )
     )
 
-    print(f"  After quality checks: {silver_df.count()} rows")
-    print("✓ Pipeline logic validated")
+    print("   Aggregation result:")
+    agg_df.show()
+
+    print("=" * 60)
+    print("VALIDATION COMPLETE")
+    print("=" * 60)
+    print("""
+Next steps to run as actual pipeline:
+1. Deploy this notebook to a Lakeflow pipeline
+2. Configure pipeline settings in databricks.yml
+3. Run: databricks bundle run nemweb_pipeline_job
+    """)
 
     return True
 
