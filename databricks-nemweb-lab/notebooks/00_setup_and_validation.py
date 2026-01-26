@@ -324,16 +324,11 @@ if FORCE_RELOAD or not table_exists:
                     values = parts[4:]
                     row_dict = dict(zip(headers, values))
 
-                    # Convert to tuple matching schema
-                    ts_val = row_dict.get("SETTLEMENTDATE", "")
-                    ts = None
-                    if ts_val:
-                        for fmt in ["%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"]:
-                            try:
-                                ts = dt.strptime(ts_val.strip(), fmt)
-                                break
-                            except ValueError:
-                                continue
+                    # Keep timestamp as string - cast later in Spark
+                    ts_val = row_dict.get("SETTLEMENTDATE", "").strip()
+                    # Normalize to standard format
+                    if ts_val and "/" in ts_val:
+                        ts_val = ts_val.replace("/", "-")
 
                     def to_float(v):
                         try:
@@ -342,7 +337,7 @@ if FORCE_RELOAD or not table_exists:
                             return None
 
                     rows.append((
-                        ts,
+                        ts_val if ts_val else None,  # Keep as string
                         row_dict.get("RUNNO"),
                         row_dict.get("REGIONID"),
                         row_dict.get("DISPATCHINTERVAL"),
@@ -377,11 +372,29 @@ if FORCE_RELOAD or not table_exists:
 
     print(f"Parsed {len(all_rows):,} rows total")
 
-    # Create DataFrame
-    from nemweb_utils import get_nemweb_schema
-    schema = get_nemweb_schema("DISPATCHREGIONSUM")
+    # Create DataFrame with string schema first (avoids Spark Connect datetime issues)
+    from pyspark.sql.types import StructType, StructField, StringType, DoubleType
 
-    df = spark.createDataFrame(all_rows, schema=schema)
+    string_schema = StructType([
+        StructField("SETTLEMENTDATE", StringType(), True),  # String first, cast later
+        StructField("RUNNO", StringType(), True),
+        StructField("REGIONID", StringType(), True),
+        StructField("DISPATCHINTERVAL", StringType(), True),
+        StructField("INTERVENTION", StringType(), True),
+        StructField("TOTALDEMAND", DoubleType(), True),
+        StructField("AVAILABLEGENERATION", DoubleType(), True),
+        StructField("AVAILABLELOAD", DoubleType(), True),
+        StructField("DEMANDFORECAST", DoubleType(), True),
+        StructField("DISPATCHABLEGENERATION", DoubleType(), True),
+        StructField("DISPATCHABLELOAD", DoubleType(), True),
+        StructField("NETINTERCHANGE", DoubleType(), True),
+    ])
+
+    df = spark.createDataFrame(all_rows, schema=string_schema)
+
+    # Cast timestamp column in Spark (not Python)
+    from pyspark.sql.functions import to_timestamp
+    df = df.withColumn("SETTLEMENTDATE", to_timestamp("SETTLEMENTDATE", "yyyy-MM-dd HH:mm:ss"))
 
     # Write to Delta
     if table_exists:
