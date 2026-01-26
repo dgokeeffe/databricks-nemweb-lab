@@ -715,6 +715,9 @@ class NemwebVolumeReader(DataSourceReader):
 
     def _parse_csv(self, csv_file, record_type: str) -> list[dict]:
         """Parse NEMWEB multi-record CSV format."""
+        import csv
+        import io
+
         text = csv_file.read().decode("utf-8")
 
         if not record_type:
