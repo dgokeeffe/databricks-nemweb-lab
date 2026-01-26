@@ -1,5 +1,6 @@
 bundle:
   name: nemweb-lab
+  databricks_cli_version: ">= 0.283.0"
 
 variables:
   # NEMWEB Lab configuration
@@ -16,25 +17,44 @@ variables:
     description: "Unity Catalog schema name"
     default: "nemweb_lab"
 
-  # SQL Warehouse for dashboard queries
-  warehouse_id:
-    lookup:
-      warehouse: "Serverless Starter Warehouse"
-
   # Environment for deployment paths
   environment:
     description: "Deployment environment (dev, staging, prod)"
     default: "dev"
 
+# Include all files needed for the lab
+sync:
+  include:
+    - "databricks-nemweb-lab/src/**"
+    - "databricks-nemweb-lab/notebooks/**"
+    - "databricks-nemweb-lab/solutions/**"
+    - "databricks-nemweb-lab/app/**"
+
 targets:
   dev:
     default: true
     mode: development
+    # Uses default profile from ~/.databrickscfg
+    # Override with: databricks bundle deploy --profile <profile_name>
 
   prod:
     mode: production
+    # Configure for production workspace before deploying
 
 resources:
+  # NEMWEB Lakeflow Declarative Pipeline
+  pipelines:
+    nemweb_pipeline:
+      name: "${var.project_name}-pipeline-${var.environment}"
+      serverless: true
+      catalog: "${var.catalog}"
+      target: "${var.schema}"
+      libraries:
+        - file:
+            path: "./databricks-nemweb-lab/src/pipeline/nemweb_pipeline.py"
+      configuration:
+        bundle.sourcePath: ${workspace.file_path}/databricks-nemweb-lab/src
+
   # NEMWEB Price Dashboard App
   apps:
     nemweb_prices:
@@ -54,17 +74,17 @@ resources:
               catalog: "${var.catalog}"
               schema: "${var.schema}"
 
-        - task_key: custom_datasource
+        - task_key: custom_source
           depends_on:
             - task_key: setup_validation
           notebook_task:
-            notebook_path: "./databricks-nemweb-lab/notebooks/01_custom_datasource_exercise.py"
+            notebook_path: "./databricks-nemweb-lab/notebooks/01_custom_source_exercise.py"
 
         - task_key: lakeflow_pipeline
           depends_on:
-            - task_key: custom_datasource
+            - task_key: custom_source
           notebook_task:
-            notebook_path: "./databricks-nemweb-lab/notebooks/02_lakeflow_pipeline_exercise.py"
+            notebook_path: "./databricks-nemweb-lab/notebooks/02_lakeflow_pipeline.py"
 
         - task_key: cluster_sizing
           depends_on:
@@ -78,6 +98,14 @@ resources:
           notebook_task:
             notebook_path: "./databricks-nemweb-lab/notebooks/03b_optimization_comparison.py"
 
+    # Pipeline refresh job - triggers the Lakeflow pipeline
+    nemweb_pipeline_job:
+      name: "${var.project_name} - Pipeline Refresh [${var.environment}]"
+      tasks:
+        - task_key: refresh_pipeline
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.nemweb_pipeline.id}
+
     # Solution workflow for instructors
     nemweb_lab_solutions:
       name: "${var.project_name} - Solutions [${var.environment}]"
@@ -89,16 +117,22 @@ resources:
               catalog: "${var.catalog}"
               schema: "${var.schema}"
 
-        - task_key: custom_datasource_solution
+        - task_key: custom_source_solution
           depends_on:
             - task_key: setup_validation
           notebook_task:
-            notebook_path: "./databricks-nemweb-lab/solutions/01_custom_datasource_solution.py"
+            notebook_path: "./databricks-nemweb-lab/solutions/01_custom_source_solution.py"
 
         - task_key: lakeflow_pipeline_solution
           depends_on:
-            - task_key: custom_datasource_solution
+            - task_key: custom_source_solution
           notebook_task:
             notebook_path: "./databricks-nemweb-lab/solutions/02_lakeflow_pipeline_solution.py"
+
+        - task_key: optimization_solution
+          depends_on:
+            - task_key: lakeflow_pipeline_solution
+          notebook_task:
+            notebook_path: "./databricks-nemweb-lab/solutions/03b_optimization_comparison_solution.py"
 
 # For more options and schema, see: https://docs.databricks.com/aws/en/dev-tools/bundles/settings
