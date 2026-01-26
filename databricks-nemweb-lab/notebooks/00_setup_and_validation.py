@@ -89,26 +89,40 @@ except urllib.error.URLError as e:
 
 # MAGIC %md
 # MAGIC ## 4. Lab Source Code Installation
+# MAGIC
+# MAGIC Install the lab package so all modules are available to Spark workers.
 
 # COMMAND ----------
 
-import sys
+# Compute the workspace path for pip install
 import os
-from pathlib import Path
 
-# Add the src directory to Python path
-# Get the notebook path and navigate to src
-try:
-    notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
-    src_path = "/Workspace" + str(Path(notebook_path).parent.parent / "src")
-except:
-    # Fallback for local development
-    src_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath("."))), "src")
+# Get current notebook's workspace location
+notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
+# notebooks/00_setup -> remove filename and go up to find src
+repo_root = str(os.path.dirname(os.path.dirname(notebook_path)))
+src_path = f"/Workspace{repo_root}/src"
 
-if src_path not in sys.path:
-    sys.path.insert(0, src_path)
+print(f"Installing from: {src_path}")
 
-print(f"Source path: {src_path}")
+# COMMAND ----------
+
+# Install the lab package (run this cell)
+# Note: This uses pip to install the src package to the cluster
+import subprocess, sys
+result = subprocess.run(
+    [sys.executable, "-m", "pip", "install", src_path, "-q"],
+    capture_output=True, text=True
+)
+if result.returncode == 0:
+    print("✓ Package installed successfully")
+else:
+    print(f"Installation output: {result.stdout}\n{result.stderr}")
+
+# COMMAND ----------
+
+# Restart Python to pick up the installed package
+dbutils.library.restartPython()
 
 # COMMAND ----------
 
@@ -116,10 +130,6 @@ print(f"Source path: {src_path}")
 # MAGIC ## 5. Test Import of Lab Modules
 
 # COMMAND ----------
-
-# Add src directory to path for imports
-import sys
-sys.path.append("../src")
 
 try:
     from nemweb_utils import fetch_nemweb_data, get_nemweb_schema, get_nem_regions
@@ -130,7 +140,7 @@ try:
 
 except ImportError as e:
     print(f"⚠ Could not import lab modules: {e}")
-    print("  This is OK - exercises include inline code")
+    print("  Re-run cells 4.1-4.3 to install the package")
 
 # COMMAND ----------
 
@@ -145,6 +155,9 @@ try:
     print("✓ NEMWEB custom data source registered")
 except ImportError as e:
     print(f"⚠ Could not register data source: {e}")
+    print("  Re-run cells 4.1-4.3 to install the package")
+except Exception as e:
+    print(f"⚠ Registration error: {e}")
     print("  You'll register it manually in exercise 01")
 
 # COMMAND ----------
