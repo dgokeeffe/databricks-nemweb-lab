@@ -90,44 +90,77 @@ except urllib.error.URLError as e:
 # MAGIC %md
 # MAGIC ## 4. Lab Source Code Installation
 # MAGIC
-# MAGIC Install the lab package so all modules are available to Spark workers.
+# MAGIC Add the src folder to Python path so modules are importable.
+# MAGIC
+# MAGIC > **Reference:** [Importing workspace files](https://docs.databricks.com/aws/en/ldp/import-workspace-files)
 
 # COMMAND ----------
 
-# Compute the workspace path for pip install
+# Compute the workspace path to src folder
 import os
+import sys
 
 # Get current notebook's workspace location
 notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
-# notebooks/00_setup -> remove filename and go up to find src
+print(f"Notebook path: {notebook_path}")
+
+# Navigate up from notebooks/ to repo root, then into src/
 repo_root = str(os.path.dirname(os.path.dirname(notebook_path)))
 src_path = f"/Workspace{repo_root}/src"
 
-print(f"Installing from: {src_path}")
+print(f"Source path: {src_path}")
+
+# Verify the path exists
+import os.path
+if os.path.exists(src_path):
+    print(f"✓ Path exists")
+else:
+    print(f"⚠ Path does not exist - check your workspace structure")
+    # Try alternative path for Repos
+    alt_path = f"/Workspace/Repos{notebook_path.replace('/Repos', '').rsplit('/', 2)[0]}/src"
+    print(f"  Trying alternative: {alt_path}")
+    if os.path.exists(alt_path):
+        src_path = alt_path
+        print(f"✓ Alternative path exists")
+
+# Add to sys.path for driver imports
+if src_path not in sys.path:
+    sys.path.insert(0, src_path)
+    print(f"✓ Added to sys.path")
 
 # COMMAND ----------
 
-# Install the lab package (run this cell)
-# Note: This uses pip to install the src package to the cluster
-import subprocess, sys
+# Also pip install for worker availability (custom data sources run on workers)
+import subprocess
 result = subprocess.run(
-    [sys.executable, "-m", "pip", "install", src_path, "-q"],
+    [sys.executable, "-m", "pip", "install", "-e", src_path, "-q"],
     capture_output=True, text=True
 )
 if result.returncode == 0:
-    print("✓ Package installed successfully")
+    print("✓ Package installed for workers")
 else:
-    print(f"Installation output: {result.stdout}\n{result.stderr}")
+    print(f"⚠ pip install failed (may still work via sys.path):")
+    print(f"  {result.stderr}")
 
 # COMMAND ----------
 
-# Restart Python to pick up the installed package
+# Restart Python to pick up changes
 dbutils.library.restartPython()
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## 5. Test Import of Lab Modules
+
+# COMMAND ----------
+
+# Re-add src to path after restart (restartPython clears sys.path modifications)
+import os, sys
+notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
+repo_root = str(os.path.dirname(os.path.dirname(notebook_path)))
+src_path = f"/Workspace{repo_root}/src"
+if src_path not in sys.path:
+    sys.path.insert(0, src_path)
 
 # COMMAND ----------
 
