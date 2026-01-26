@@ -393,6 +393,22 @@ if FORCE_RELOAD or not table_exists:
     price_count = spark.table(PRICE_TABLE_PATH).count()
     print(f"  Loaded {price_count:,} rows to {PRICE_TABLE_PATH}")
 
+    # -------------------------------------------------------------------------
+    # Load NEM Registry (generator metadata from OpenNEM)
+    # -------------------------------------------------------------------------
+    print("\nLoading NEM Registry (generator metadata)...")
+    REGISTRY_TABLE_PATH = f"{CATALOG}.{SCHEMA}.nem_registry"
+
+    from nem_registry import NemRegistryDataSource
+    spark.dataSource.register(NemRegistryDataSource)
+
+    df_registry = spark.read.format("nem_registry").load()
+
+    spark.sql(f"DROP TABLE IF EXISTS {REGISTRY_TABLE_PATH}")
+    df_registry.write.format("delta").mode("overwrite").saveAsTable(REGISTRY_TABLE_PATH)
+    registry_count = spark.table(REGISTRY_TABLE_PATH).count()
+    print(f"  Loaded {registry_count:,} generator units to {REGISTRY_TABLE_PATH}")
+
     elapsed = time.time() - start_time
 
     print()
@@ -400,6 +416,7 @@ if FORCE_RELOAD or not table_exists:
     print(f"Data loading complete in {elapsed:.1f}s")
     print(f"  - {TABLE_PATH}: {regionsum_count:,} rows (demand)")
     print(f"  - {PRICE_TABLE_PATH}: {price_count:,} rows (prices)")
+    print(f"  - {REGISTRY_TABLE_PATH}: {registry_count:,} units (generators)")
 else:
     print("Using existing data")
 
@@ -414,6 +431,7 @@ from databricks.sdk.runtime import display
 from pyspark.sql.functions import min, max, countDistinct, avg, round as spark_round
 
 PRICE_TABLE_PATH = f"{CATALOG}.{SCHEMA}.nemweb_prices"
+REGISTRY_TABLE_PATH = f"{CATALOG}.{SCHEMA}.nem_registry"
 
 print("=" * 60)
 print("LOADED TABLES")
@@ -422,6 +440,7 @@ print("=" * 60)
 for table_name, table_path in [
     ("Demand/Supply (DISPATCHREGIONSUM)", TABLE_PATH),
     ("Prices (DISPATCHPRICE)", PRICE_TABLE_PATH),
+    ("Generator Registry (OpenNEM)", REGISTRY_TABLE_PATH),
 ]:
     if spark.catalog.tableExists(table_path):
         df = spark.table(table_path)
@@ -468,10 +487,12 @@ if spark.catalog.tableExists(PRICE_TABLE_PATH):
 from nemweb_utils import get_version
 
 PRICE_TABLE_PATH = f"{CATALOG}.{SCHEMA}.nemweb_prices"
+REGISTRY_TABLE_PATH = f"{CATALOG}.{SCHEMA}.nem_registry"
 
 # Get row counts
 raw_count = spark.table(TABLE_PATH).count() if spark.catalog.tableExists(TABLE_PATH) else 0
 price_count = spark.table(PRICE_TABLE_PATH).count() if spark.catalog.tableExists(PRICE_TABLE_PATH) else 0
+registry_count = spark.table(REGISTRY_TABLE_PATH).count() if spark.catalog.tableExists(REGISTRY_TABLE_PATH) else 0
 
 print("=" * 60)
 print("SETUP COMPLETE")
@@ -489,6 +510,11 @@ Data Tables:
   {PRICE_TABLE_PATH}
     - Rows: {price_count:,}
     - Contains: RRP (Regional Reference Price), EEP
+
+  {REGISTRY_TABLE_PATH}
+    - Rows: {registry_count:,}
+    - Contains: DUID, station_name, fuel_category, capacity_mw, lat/lng
+    - Source: OpenNEM (github.com/opennem/opennem)
 
 Base Environment (for workspace-wide use):
   Wheel:    {ARTIFACTS_VOLUME}/nemweb_datasource-latest.whl

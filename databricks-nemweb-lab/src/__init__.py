@@ -11,6 +11,8 @@ Sources (readers):
       Educational implementation for learning the Data Source API
     - NemwebArrowDataSource: PyArrow-based reader (format: 'nemweb_arrow')
       Production implementation with auto-download and zero-copy transfer
+    - NemRegistryDataSource: Generator metadata (format: 'nem_registry')
+      Station names, fuel types, capacities from OpenNEM
 
 Sinks (writers):
     - PriceAlertDataSource: Triggers alerts on price/demand thresholds
@@ -19,6 +21,7 @@ Sinks (writers):
 
 from .nemweb_datasource import NemwebDataSource, NemwebStreamReader
 from .nemweb_datasource_arrow import NemwebArrowDataSource
+from .nem_registry import NemRegistryDataSource, load_registry_data
 from .nemweb_utils import (
     fetch_nemweb_data,
     fetch_with_retry,
@@ -34,6 +37,7 @@ __all__ = [
     # Data sources (readers)
     "NemwebDataSource",      # format: 'nemweb' - educational
     "NemwebArrowDataSource", # format: 'nemweb_arrow' - production
+    "NemRegistryDataSource", # format: 'nem_registry' - generator metadata
     "NemwebStreamReader",
     # Data sinks (writers)
     "PriceAlertDataSource",
@@ -46,4 +50,5 @@ __all__ = [
     "get_nem_regions",
     "get_version",
     "list_available_tables",
+    "load_registry_data",
 ]
