@@ -27,7 +27,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Version for debugging - increment when making changes
-__version__ = "1.3.0"
+__version__ = "1.4.0"
+
+# Debug file path - check this in DBFS after errors
+DEBUG_LOG_PATH = "/tmp/nemweb_debug.log"
 
 
 def get_version() -> str:
@@ -438,6 +441,15 @@ def _get_sample_data(table: str, region: Optional[str] = None) -> list[dict]:
     return sample
 
 
+def _debug_log(msg: str) -> None:
+    """Write debug message to file (visible on workers)."""
+    try:
+        with open(DEBUG_LOG_PATH, "a") as f:
+            f.write(f"{msg}\n")
+    except Exception:
+        pass
+
+
 def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
     """
     Parse NEMWEB data and yield tuples matching the Spark schema.
@@ -451,14 +463,22 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
     """
     from pyspark.sql.types import TimestampType
 
+    _debug_log(f"=== parse_nemweb_csv v{__version__} started ===")
+    _debug_log(f"Processing {len(data)} rows")
+
     field_names = [field.name for field in schema.fields]
     field_types = {field.name: field.dataType for field in schema.fields}
 
-    # Identify timestamp columns for validation
-    timestamp_cols = {name for name, dtype in field_types.items()
-                     if isinstance(dtype, TimestampType)}
+    # Identify timestamp column INDICES for final validation
+    timestamp_indices = []
+    for idx, field in enumerate(schema.fields):
+        if isinstance(field.dataType, TimestampType):
+            timestamp_indices.append(idx)
+            _debug_log(f"Timestamp column: {field.name} at index {idx}")
 
+    row_num = 0
     for row in data:
+        row_num += 1
         try:
             values = []
             for name in field_names:
@@ -468,22 +488,30 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
                     values.append(None)
                 else:
                     converted = _convert_value(raw_value, field_types[name])
-
-                    # FINAL TIMESTAMP VALIDATION - must be datetime or None
-                    if name in timestamp_cols:
-                        if converted is not None:
-                            # Use type().__name__ check to be absolutely certain
-                            if type(converted).__name__ != 'datetime':
-                                converted = None
-
                     values.append(converted)
 
-            yield tuple(values)
+            # FINAL VALIDATION: Check all timestamp columns before yielding
+            for ts_idx in timestamp_indices:
+                val = values[ts_idx]
+                if val is not None and type(val).__name__ != 'datetime':
+                    _debug_log(f"ROW {row_num} BAD TIMESTAMP at idx {ts_idx}: "
+                              f"type={type(val).__name__}, value={repr(val)}, "
+                              f"raw={repr(row.get(field_names[ts_idx]))}")
+                    values[ts_idx] = None  # Force to None
+
+            result = tuple(values)
+
+            # Debug first few rows
+            if row_num <= 3:
+                _debug_log(f"Row {row_num} tuple[0]: type={type(result[0]).__name__}, val={result[0]}")
+
+            yield result
 
         except Exception as e:
-            # Skip problematic rows rather than crash
-            logger.warning(f"Skipping row due to error: {e}")
+            _debug_log(f"ROW {row_num} ERROR: {e}")
             continue
+
+    _debug_log(f"=== parse_nemweb_csv complete: {row_num} rows ===")
 
 
 def _convert_timestamp(value: str) -> Optional[datetime]:
