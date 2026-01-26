@@ -13,7 +13,7 @@ import io
 import zipfile
 
 from pyspark.sql.types import (
-    StructType, StructField, StringType, DoubleType, TimestampType, IntegerType
+    StructType, StructField, StringType, DoubleType, IntegerType
 )
 
 # Import the module under test (path configured in conftest.py)
@@ -205,29 +205,27 @@ class TestConvertValue:
         assert result == 123
         assert isinstance(result, int)
 
-    def test_timestamp_slash_format(self):
-        """Should parse NEMWEB slash date format."""
-        result = _convert_value("2024/01/15 12:30:00", TimestampType())
-        assert isinstance(result, datetime)
-        assert result.year == 2024
-        assert result.month == 1
-        assert result.day == 15
+    def test_timestamp_slash_format_normalized(self):
+        """Timestamps with slashes should be normalized to dashes (StringType for Serverless)."""
+        result = _convert_value("2024/01/15 12:30:00", StringType())
+        assert isinstance(result, str)
+        assert result == "2024-01-15 12:30:00"
 
-    def test_timestamp_dash_format(self):
-        """Should parse ISO date format."""
-        result = _convert_value("2024-01-15 12:30:00", TimestampType())
-        assert isinstance(result, datetime)
-        assert result.year == 2024
+    def test_timestamp_dash_format_preserved(self):
+        """Timestamps with dashes should be preserved (StringType for Serverless)."""
+        result = _convert_value("2024-01-15 12:30:00", StringType())
+        assert isinstance(result, str)
+        assert result == "2024-01-15 12:30:00"
 
     def test_null_value(self):
         """Should return None for null/empty values."""
         assert _convert_value(None, StringType()) is None
         assert _convert_value("", DoubleType()) is None
 
-    def test_invalid_timestamp_returns_none(self):
-        """Should return None if timestamp parsing fails (required for Spark compatibility)."""
-        result = _convert_value("invalid-date", TimestampType())
-        assert result is None
+    def test_string_returns_string(self):
+        """StringType always returns string (no timestamp validation)."""
+        result = _convert_value("invalid-date", StringType())
+        assert result == "invalid-date"
 
 
 class TestParseNemwebCsv:
@@ -326,12 +324,17 @@ class TestGetNemwebSchema:
         assert "REGIONID" in field_names
 
     def test_schema_field_types(self):
-        """Schema fields should have correct types."""
+        """Schema fields should have correct types.
+
+        NOTE: SETTLEMENTDATE is StringType for Serverless compatibility.
+        Cast to timestamp in Spark: to_timestamp(col("SETTLEMENTDATE"))
+        """
         schema = get_nemweb_schema("DISPATCHREGIONSUM")
 
         for field in schema.fields:
             if field.name == "SETTLEMENTDATE":
-                assert isinstance(field.dataType, TimestampType)
+                # StringType for Serverless compatibility
+                assert isinstance(field.dataType, StringType)
             elif field.name == "REGIONID":
                 assert isinstance(field.dataType, StringType)
             elif field.name == "TOTALDEMAND":

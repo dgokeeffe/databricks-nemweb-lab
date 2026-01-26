@@ -2,15 +2,17 @@
 Tests for NEMWEB CSV parsing with real data fixtures.
 
 These tests use actual NEMWEB CSV files to ensure parsing produces
-exact expected output, including correct timestamp conversion.
+exact expected output.
+
+NOTE: SETTLEMENTDATE is now StringType (not TimestampType) for Serverless
+compatibility. Timestamps should be cast with to_timestamp() in Spark.
 """
 
 import io
-from datetime import datetime
 from pathlib import Path
 
 import pytest
-from pyspark.sql.types import TimestampType
+from pyspark.sql.types import StringType
 
 # Import the functions we're testing
 from nemweb_utils import (
@@ -96,27 +98,27 @@ class TestParseNemwebCsvConversion:
         for tup in tuples:
             assert len(tup) == len(schema.fields)
 
-    def test_settlementdate_is_datetime(self, sample_rows):
-        """SETTLEMENTDATE must be converted to datetime object."""
+    def test_settlementdate_is_string(self, sample_rows):
+        """SETTLEMENTDATE is StringType for Serverless compatibility."""
         schema = get_nemweb_schema("DISPATCHREGIONSUM")
         tuples = list(parse_nemweb_csv(sample_rows, schema))
 
         for i, tup in enumerate(tuples):
             ts_value = tup[0]  # SETTLEMENTDATE is first column
 
-            # Must be datetime or None, never a string
-            assert ts_value is None or isinstance(ts_value, datetime), \
+            # Must be string or None (for Serverless compatibility)
+            assert ts_value is None or isinstance(ts_value, str), \
                 f"Row {i}: SETTLEMENTDATE = {repr(ts_value)} (type: {type(ts_value).__name__})"
 
-    def test_all_timestamp_fields_are_datetime(self, sample_rows):
-        """All TimestampType fields must be datetime objects or None."""
+    def test_all_timestamp_fields_are_strings(self, sample_rows):
+        """All SETTLEMENTDATE fields are StringType (for Serverless)."""
         schema = get_nemweb_schema("DISPATCHREGIONSUM")
         tuples = list(parse_nemweb_csv(sample_rows, schema))
 
         for i, tup in enumerate(tuples):
             for j, (field, value) in enumerate(zip(schema.fields, tup)):
-                if isinstance(field.dataType, TimestampType):
-                    assert value is None or isinstance(value, datetime), \
+                if field.name == "SETTLEMENTDATE":
+                    assert value is None or isinstance(value, str), \
                         f"Row {i}, {field.name}: {repr(value)} (type: {type(value).__name__})"
 
     def test_double_fields_are_float(self, sample_rows):
@@ -134,51 +136,45 @@ class TestParseNemwebCsvConversion:
 
 
 class TestConvertValueTimestamp:
-    """Specific tests for timestamp conversion."""
+    """Tests for timestamp string handling (now StringType for Serverless)."""
 
-    def test_nemweb_slash_format_with_quotes(self):
-        """Should parse NEMWEB format: "2025/12/27 00:05:00" (with quotes stripped)."""
-        # This is what we get AFTER stripping quotes in _parse_nemweb_csv_file
-        result = _convert_value("2025/12/27 00:05:00", TimestampType())
+    def test_nemweb_slash_format_normalized(self):
+        """Should normalize NEMWEB slash format to dashes: 2025/12/27 -> 2025-12-27."""
+        result = _convert_value("2025/12/27 00:05:00", StringType())
 
-        assert isinstance(result, datetime)
-        assert result.year == 2025
-        assert result.month == 12
-        assert result.day == 27
-        assert result.hour == 0
-        assert result.minute == 5
-        assert result.second == 0
+        assert isinstance(result, str)
+        # Slashes should be converted to dashes
+        assert result == "2025-12-27 00:05:00"
 
-    def test_nemweb_dash_format(self):
-        """Should parse dash format: 2024-01-01 00:05:00."""
-        result = _convert_value("2024-01-01 00:05:00", TimestampType())
+    def test_nemweb_dash_format_preserved(self):
+        """Dash format should be preserved: 2024-01-01 00:05:00."""
+        result = _convert_value("2024-01-01 00:05:00", StringType())
 
-        assert isinstance(result, datetime)
-        assert result.year == 2024
-        assert result.month == 1
-        assert result.day == 1
+        assert isinstance(result, str)
+        assert result == "2024-01-01 00:05:00"
 
     def test_nemweb_no_seconds_format(self):
-        """Should parse format without seconds: 2025/12/27 00:05."""
-        result = _convert_value("2025/12/27 00:05", TimestampType())
+        """Should normalize format without seconds."""
+        result = _convert_value("2025/12/27 00:05", StringType())
 
-        assert isinstance(result, datetime)
-        assert result.second == 0
+        assert isinstance(result, str)
+        assert result == "2025-12-27 00:05"
 
-    def test_invalid_timestamp_returns_none(self):
-        """Invalid timestamp should return None, not raise or return string."""
-        result = _convert_value("not-a-date", TimestampType())
+    def test_invalid_timestamp_returns_string(self):
+        """StringType always returns string (no validation)."""
+        result = _convert_value("not-a-date", StringType())
 
-        assert result is None, f"Expected None, got {repr(result)}"
+        # StringType doesn't validate - just returns the string
+        assert result == "not-a-date"
 
     def test_empty_string_returns_none(self):
         """Empty string should return None."""
-        result = _convert_value("", TimestampType())
+        result = _convert_value("", StringType())
         assert result is None
 
     def test_none_returns_none(self):
         """None input should return None."""
-        result = _convert_value(None, TimestampType())
+        result = _convert_value(None, StringType())
         assert result is None
 
 
@@ -200,19 +196,15 @@ class TestExactParsedValues:
         pytest.fail("No NSW1 row found in fixture")
 
     def test_exact_timestamp_value(self, first_nsw_row):
-        """Verify exact timestamp parsing from fixture."""
+        """Verify timestamp is normalized string from fixture."""
         schema = get_nemweb_schema("DISPATCHREGIONSUM")
         tuples = list(parse_nemweb_csv([first_nsw_row], schema))
 
         ts = tuples[0][0]  # SETTLEMENTDATE
 
-        # Should be 2025/12/27 00:05:00 based on fixture
-        assert ts.year == 2025
-        assert ts.month == 12
-        assert ts.day == 27
-        assert ts.hour == 0
-        assert ts.minute == 5
-        assert ts.second == 0
+        # Should be normalized to dashes: 2025-12-27 00:05:00
+        assert isinstance(ts, str)
+        assert ts == "2025-12-27 00:05:00"
 
     def test_exact_region_value(self, first_nsw_row):
         """Verify exact region ID."""

@@ -26,29 +26,29 @@ from nemweb_datasource import (
 
 
 class TestNemwebPartition:
-    """Tests for NemwebPartition class."""
+    """Tests for NemwebPartition class.
+
+    NemwebPartition now uses single date (not start/end) for fine-grained partitioning.
+    Each partition represents one region for one day.
+    """
 
     def test_partition_creation(self):
         """Should create partition with all attributes."""
         partition = NemwebPartition(
             region="NSW1",
-            start_date="2024-01-01",
-            end_date="2024-01-07",
+            date="2024-01-01",
             table="DISPATCHREGIONSUM"
         )
 
         assert partition.region == "NSW1"
-        assert partition.start_date == "2024-01-01"
-        assert partition.end_date == "2024-01-07"
+        assert partition.date == "2024-01-01"
         assert partition.table == "DISPATCHREGIONSUM"
-        assert partition.attempt == 0
 
     def test_partition_id_auto_generated(self):
         """Should auto-generate deterministic partition ID."""
         partition = NemwebPartition(
             region="NSW1",
-            start_date="2024-01-01",
-            end_date="2024-01-07",
+            date="2024-01-01",
             table="DISPATCHREGIONSUM"
         )
 
@@ -57,22 +57,22 @@ class TestNemwebPartition:
 
     def test_partition_id_is_deterministic(self):
         """Same inputs should produce same partition ID."""
-        p1 = NemwebPartition("NSW1", "2024-01-01", "2024-01-07", "DISPATCHREGIONSUM")
-        p2 = NemwebPartition("NSW1", "2024-01-01", "2024-01-07", "DISPATCHREGIONSUM")
+        p1 = NemwebPartition("NSW1", "2024-01-01", "DISPATCHREGIONSUM")
+        p2 = NemwebPartition("NSW1", "2024-01-01", "DISPATCHREGIONSUM")
 
         assert p1.partition_id == p2.partition_id
 
     def test_different_regions_different_ids(self):
         """Different regions should have different partition IDs."""
-        p1 = NemwebPartition("NSW1", "2024-01-01", "2024-01-07", "DISPATCHREGIONSUM")
-        p2 = NemwebPartition("VIC1", "2024-01-01", "2024-01-07", "DISPATCHREGIONSUM")
+        p1 = NemwebPartition("NSW1", "2024-01-01", "DISPATCHREGIONSUM")
+        p2 = NemwebPartition("VIC1", "2024-01-01", "DISPATCHREGIONSUM")
 
         assert p1.partition_id != p2.partition_id
 
     def test_different_dates_different_ids(self):
-        """Different date ranges should have different partition IDs."""
-        p1 = NemwebPartition("NSW1", "2024-01-01", "2024-01-07", "DISPATCHREGIONSUM")
-        p2 = NemwebPartition("NSW1", "2024-01-08", "2024-01-14", "DISPATCHREGIONSUM")
+        """Different dates should have different partition IDs."""
+        p1 = NemwebPartition("NSW1", "2024-01-01", "DISPATCHREGIONSUM")
+        p2 = NemwebPartition("NSW1", "2024-01-02", "DISPATCHREGIONSUM")
 
         assert p1.partition_id != p2.partition_id
 
@@ -80,8 +80,7 @@ class TestNemwebPartition:
         """Should accept custom partition ID."""
         partition = NemwebPartition(
             region="NSW1",
-            start_date="2024-01-01",
-            end_date="2024-01-07",
+            date="2024-01-01",
             table="DISPATCHREGIONSUM",
             partition_id="custom123"
         )
@@ -90,7 +89,7 @@ class TestNemwebPartition:
 
     def test_partition_id_format(self):
         """Partition ID should be valid hex string."""
-        partition = NemwebPartition("NSW1", "2024-01-01", "2024-01-07", "DISPATCHREGIONSUM")
+        partition = NemwebPartition("NSW1", "2024-01-01", "DISPATCHREGIONSUM")
 
         # Should be valid hex
         int(partition.partition_id, 16)  # Raises ValueError if not hex
@@ -132,10 +131,15 @@ class TestNemwebDataSourceReader:
         assert reader.table == "DISPATCHREGIONSUM"
         assert len(reader.regions) == 5  # All 5 NEM regions
 
-    def test_partitions_creates_one_per_region(self):
-        """Should create one partition per region."""
+    def test_partitions_creates_one_per_region_per_day(self):
+        """Should create one partition per region per day."""
         schema = self.get_test_schema()
-        options = {"regions": "NSW1,VIC1,QLD1"}
+        # Single day date range with 3 regions = 3 partitions
+        options = {
+            "regions": "NSW1,VIC1,QLD1",
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-01"  # Single day
+        }
 
         reader = NemwebDataSourceReader(schema, options)
         partitions = reader.partitions()
@@ -160,6 +164,8 @@ class TestNemwebDataSourceReader:
         schema = self.get_test_schema()
         options = {
             "regions": "NSW1,VIC1,QLD1",
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-01",  # Single day
             "checkpoint_table": "test_checkpoints",
             "skip_completed": "true"
         }
@@ -168,9 +174,9 @@ class TestNemwebDataSourceReader:
 
         # Mock the checkpoint table read
         with patch.object(reader, '_get_completed_partitions') as mock_get:
-            # Simulate NSW1 already completed
+            # Simulate NSW1 for 2024-01-01 already completed
             mock_get.return_value = {
-                NemwebPartition("NSW1", "2024-01-01", "2024-01-07", "DISPATCHREGIONSUM").partition_id
+                NemwebPartition("NSW1", "2024-01-01", "DISPATCHREGIONSUM").partition_id
             }
 
             partitions = reader.partitions()
@@ -185,7 +191,7 @@ class TestNemwebDataSourceReader:
         schema = self.get_test_schema()
         reader = NemwebDataSourceReader(schema, {})
 
-        partition = NemwebPartition("NSW1", "2024-01-01", "2024-01-01", "DISPATCHREGIONSUM")
+        partition = NemwebPartition("NSW1", "2024-01-01", "DISPATCHREGIONSUM")
 
         mock_data = [
             {"SETTLEMENTDATE": "2024-01-01 00:05:00", "REGIONID": "NSW1", "TOTALDEMAND": "7500.5"}
@@ -202,7 +208,7 @@ class TestNemwebDataSourceReader:
         """Should raise on read errors."""
         schema = self.get_test_schema()
         reader = NemwebDataSourceReader(schema, {})
-        partition = NemwebPartition("NSW1", "2024-01-01", "2024-01-01", "DISPATCHREGIONSUM")
+        partition = NemwebPartition("NSW1", "2024-01-01", "DISPATCHREGIONSUM")
 
         with patch("nemweb_datasource.fetch_nemweb_data", side_effect=Exception("HTTP Error")):
             with pytest.raises(Exception):
@@ -217,14 +223,12 @@ class TestNemwebStreamReader:
         options = {
             "table": "DISPATCHREGIONSUM",
             "regions": "NSW1,VIC1",
-            "lookback_minutes": "60"
         }
 
         reader = NemwebStreamReader(options)
 
         assert reader.table == "DISPATCHREGIONSUM"
         assert reader.regions == ["NSW1", "VIC1"]
-        assert reader.lookback_minutes == 60
 
     def test_initial_offset_default(self):
         """Should return default initial offset (1 hour ago)."""
@@ -333,13 +337,12 @@ class TestPartitionIdGeneration:
         """Partition ID should match MD5 hash format."""
         partition = NemwebPartition(
             region="NSW1",
-            start_date="2024-01-01",
-            end_date="2024-01-07",
+            date="2024-01-01",
             table="DISPATCHREGIONSUM"
         )
 
-        # Manually calculate expected ID
-        id_string = "DISPATCHREGIONSUM:NSW1:2024-01-01:2024-01-07"
+        # Manually calculate expected ID (format: table:region:date)
+        id_string = "DISPATCHREGIONSUM:NSW1:2024-01-01"
         expected_id = hashlib.md5(id_string.encode()).hexdigest()[:12]
 
         assert partition.partition_id == expected_id
@@ -350,7 +353,7 @@ class TestPartitionIdGeneration:
         partition_ids = set()
 
         for region in regions:
-            p = NemwebPartition(region, "2024-01-01", "2024-01-07", "DISPATCHREGIONSUM")
+            p = NemwebPartition(region, "2024-01-01", "DISPATCHREGIONSUM")
             partition_ids.add(p.partition_id)
 
         assert len(partition_ids) == 5

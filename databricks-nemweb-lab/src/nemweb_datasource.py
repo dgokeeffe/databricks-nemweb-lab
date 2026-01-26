@@ -659,7 +659,6 @@ class NemwebVolumeReader(DataSourceReader):
         import zipfile
         import io
         import csv
-        from datetime import datetime as dt
 
         # Table config for record type filtering
         TABLE_CONFIG = {
@@ -696,15 +695,8 @@ class NemwebVolumeReader(DataSourceReader):
             if self.regions:
                 rows = [r for r in rows if r.get("REGIONID") in self.regions]
 
-            # Identify timestamp column indices for validation
-            from pyspark.sql.types import TimestampType
-            from datetime import datetime as dt
-            timestamp_indices = [
-                idx for idx, field in enumerate(self.schema.fields)
-                if isinstance(field.dataType, TimestampType)
-            ]
-
             # Convert to tuples matching schema
+            # Note: Timestamps are returned as strings for Serverless compatibility
             for row in rows:
                 try:
                     values = []
@@ -712,13 +704,6 @@ class NemwebVolumeReader(DataSourceReader):
                         raw_val = row.get(field.name)
                         converted = self._convert_value(raw_val, field.dataType)
                         values.append(converted)
-
-                    # FINAL VALIDATION: Ensure timestamp columns are datetime or None
-                    # Spark's Arrow serializer will crash with AssertionError otherwise
-                    for ts_idx in timestamp_indices:
-                        val = values[ts_idx]
-                        if val is not None and not isinstance(val, dt):
-                            values[ts_idx] = None  # Force invalid timestamps to None
 
                     yield tuple(values)
                 except Exception as e:
@@ -767,11 +752,12 @@ class NemwebVolumeReader(DataSourceReader):
     def _convert_value(self, value, spark_type):
         """Convert string value to appropriate Python type.
 
-        IMPORTANT: For TimestampType, this MUST return either datetime.datetime
-        or None. Spark's Arrow serializer will fail with AssertionError otherwise.
+        NOTE: For TimestampType, we return strings (not datetime objects) because
+        Spark Connect (Serverless) cannot serialize Python datetime through Arrow.
+        The schema is defined with StringType for timestamp columns - Spark SQL
+        can cast them after the DataFrame is created.
         """
         from pyspark.sql.types import StringType, DoubleType, IntegerType, TimestampType
-        from datetime import datetime as dt
 
         if value is None or value == "":
             return None
@@ -796,25 +782,11 @@ class NemwebVolumeReader(DataSourceReader):
                 return None
 
         elif isinstance(spark_type, TimestampType):
-            # NEMWEB timestamp formats - must return datetime or None
-            formats = [
-                "%Y/%m/%d %H:%M:%S",      # 2024/01/01 00:05:00
-                "%Y-%m-%d %H:%M:%S",      # 2024-01-01 00:05:00
-                "%Y/%m/%d %H:%M",         # 2024/01/01 00:05 (no seconds)
-                "%Y-%m-%d %H:%M",         # 2024-01-01 00:05 (no seconds)
-                "%d/%m/%Y %H:%M:%S",      # 01/01/2024 00:05:00 (AU format)
-                "%d/%m/%Y %H:%M",         # 01/01/2024 00:05 (AU format)
-            ]
-            for fmt in formats:
-                try:
-                    result = dt.strptime(str_val, fmt)
-                    # Final type check - must be datetime
-                    if isinstance(result, dt):
-                        return result
-                except (ValueError, TypeError):
-                    continue
-            # Return None if no format matched - never return string for timestamp
-            return None
+            # Return as string - Serverless can't serialize Python datetime objects
+            # Normalize format: replace slashes with dashes for consistency
+            if "/" in str_val:
+                str_val = str_val.replace("/", "-")
+            return str_val
 
         # Default: return as string (for any unrecognized types)
         return str_val

@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Version for debugging - increment when making changes
-__version__ = "2.0.1"
+__version__ = "2.1.0"
 
 # Debug file path - check this in DBFS after errors
 DEBUG_LOG_PATH = "/tmp/nemweb_debug.log"
@@ -454,6 +454,9 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
     """
     Parse NEMWEB data and yield tuples matching the Spark schema.
 
+    NOTE: Timestamps are returned as strings (not datetime) for Serverless
+    compatibility. Use Spark's to_timestamp() to cast after loading.
+
     Args:
         data: List of dictionaries from CSV
         schema: Spark StructType to match
@@ -461,20 +464,11 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
     Yields:
         Tuples with values in schema order
     """
-    from pyspark.sql.types import TimestampType
-
     _debug_log(f"=== parse_nemweb_csv v{__version__} started ===")
     _debug_log(f"Processing {len(data)} rows")
 
     field_names = [field.name for field in schema.fields]
     field_types = {field.name: field.dataType for field in schema.fields}
-
-    # Identify timestamp column INDICES for final validation
-    timestamp_indices = []
-    for idx, field in enumerate(schema.fields):
-        if isinstance(field.dataType, TimestampType):
-            timestamp_indices.append(idx)
-            _debug_log(f"Timestamp column: {field.name} at index {idx}")
 
     row_num = 0
     for row in data:
@@ -489,15 +483,6 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
                 else:
                     converted = _convert_value(raw_value, field_types[name])
                     values.append(converted)
-
-            # FINAL VALIDATION: Check all timestamp columns before yielding
-            for ts_idx in timestamp_indices:
-                val = values[ts_idx]
-                if val is not None and type(val).__name__ != 'datetime':
-                    _debug_log(f"ROW {row_num} BAD TIMESTAMP at idx {ts_idx}: "
-                              f"type={type(val).__name__}, value={repr(val)}, "
-                              f"raw={repr(row.get(field_names[ts_idx]))}")
-                    values[ts_idx] = None  # Force to None
 
             result = tuple(values)
 
@@ -514,47 +499,15 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
     _debug_log(f"=== parse_nemweb_csv complete: {row_num} rows ===")
 
 
-def _convert_timestamp(value: str) -> Optional[datetime]:
-    """
-    Convert string to datetime. Returns None if parsing fails.
-
-    CRITICAL: This function MUST return datetime.datetime or None.
-    Spark's Arrow serializer will crash with AssertionError otherwise.
-    """
-    if not value:
-        return None
-
-    # NEMWEB timestamp formats
-    formats = [
-        "%Y/%m/%d %H:%M:%S",      # 2024/01/01 00:05:00
-        "%Y-%m-%d %H:%M:%S",      # 2024-01-01 00:05:00
-        "%Y/%m/%d %H:%M",         # 2024/01/01 00:05 (no seconds)
-        "%Y-%m-%d %H:%M",         # 2024-01-01 00:05 (no seconds)
-        "%d/%m/%Y %H:%M:%S",      # 01/01/2024 00:05:00 (AU format)
-        "%d/%m/%Y %H:%M",         # 01/01/2024 00:05 (AU format, no seconds)
-    ]
-
-    for fmt in formats:
-        try:
-            result = datetime.strptime(value, fmt)
-            # Final type check - be absolutely sure
-            if type(result).__name__ == 'datetime':
-                return result
-        except (ValueError, TypeError):
-            continue
-
-    return None
-
 
 def _convert_value(value, spark_type):
     """
     Convert value to appropriate Python type based on Spark type.
 
-    IMPORTANT: For TimestampType, this MUST return either a datetime.datetime
-    object or None. Spark's Arrow serializer will fail with AssertionError
-    if any other type is returned.
+    NOTE: Timestamps are handled as StringType in the schema for Serverless
+    compatibility. Use Spark's to_timestamp() to cast after loading.
     """
-    from pyspark.sql.types import StringType, DoubleType, IntegerType, TimestampType
+    from pyspark.sql.types import StringType, DoubleType, IntegerType
 
     # Handle None/empty values
     if value is None or value == "":
@@ -570,6 +523,9 @@ def _convert_value(value, spark_type):
         return None
 
     if isinstance(spark_type, StringType):
+        # For timestamp columns (now StringType), normalize format
+        if "/" in str_value:
+            str_value = str_value.replace("/", "-")
         return str_value
 
     elif isinstance(spark_type, DoubleType):
@@ -584,17 +540,6 @@ def _convert_value(value, spark_type):
         except (ValueError, TypeError):
             return None
 
-    elif isinstance(spark_type, TimestampType):
-        # Use dedicated timestamp converter
-        result = _convert_timestamp(str_value)
-        # FINAL SAFETY CHECK - absolutely must be datetime or None
-        if result is None:
-            return None
-        if type(result).__name__ != 'datetime':
-            # This should never happen, but if it does, return None
-            return None
-        return result
-
     else:
         return str_value
 
@@ -606,6 +551,11 @@ def get_nemweb_schema(table: str) -> "StructType":
     Schemas are based on the MMS Electricity Data Model Report:
     https://nemweb.com.au/Reports/Current/MMSDataModelReport/
 
+    NOTE: SETTLEMENTDATE is StringType (not TimestampType) because Spark Connect
+    (Serverless) cannot serialize Python datetime objects through Arrow. Users
+    should cast to timestamp in Spark SQL after loading:
+        df.withColumn("SETTLEMENTDATE", to_timestamp("SETTLEMENTDATE"))
+
     Args:
         table: MMS table name
 
@@ -613,12 +563,14 @@ def get_nemweb_schema(table: str) -> "StructType":
         StructType schema for the table
     """
     from pyspark.sql.types import (
-        StructType, StructField, StringType, DoubleType, TimestampType
+        StructType, StructField, StringType, DoubleType
     )
 
+    # NOTE: SETTLEMENTDATE is StringType for Serverless compatibility
+    # Cast to timestamp in Spark: to_timestamp(col("SETTLEMENTDATE"))
     schemas = {
         "DISPATCHREGIONSUM": StructType([
-            StructField("SETTLEMENTDATE", TimestampType(), True),
+            StructField("SETTLEMENTDATE", StringType(), True),  # Cast later with to_timestamp()
             StructField("RUNNO", StringType(), True),
             StructField("REGIONID", StringType(), True),
             StructField("DISPATCHINTERVAL", StringType(), True),
@@ -633,7 +585,7 @@ def get_nemweb_schema(table: str) -> "StructType":
         ]),
 
         "DISPATCHPRICE": StructType([
-            StructField("SETTLEMENTDATE", TimestampType(), True),
+            StructField("SETTLEMENTDATE", StringType(), True),  # Cast later with to_timestamp()
             StructField("RUNNO", StringType(), True),
             StructField("REGIONID", StringType(), True),
             StructField("DISPATCHINTERVAL", StringType(), True),
@@ -646,7 +598,7 @@ def get_nemweb_schema(table: str) -> "StructType":
         ]),
 
         "TRADINGPRICE": StructType([
-            StructField("SETTLEMENTDATE", TimestampType(), True),
+            StructField("SETTLEMENTDATE", StringType(), True),  # Cast later with to_timestamp()
             StructField("RUNNO", StringType(), True),
             StructField("REGIONID", StringType(), True),
             StructField("PERIODID", StringType(), True),
@@ -660,7 +612,7 @@ def get_nemweb_schema(table: str) -> "StructType":
         # Return a generic schema for unknown tables
         logger.warning(f"No schema defined for {table}, using generic schema")
         return StructType([
-            StructField("SETTLEMENTDATE", TimestampType(), True),
+            StructField("SETTLEMENTDATE", StringType(), True),  # Cast later with to_timestamp()
             StructField("REGIONID", StringType(), True),
             StructField("DATA", StringType(), True),
         ])
