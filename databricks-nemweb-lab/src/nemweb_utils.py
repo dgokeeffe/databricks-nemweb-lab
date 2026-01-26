@@ -26,6 +26,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Version for debugging - increment when making changes
+__version__ = "1.1.0"
+
+
+def get_version() -> str:
+    """Return the module version for debugging cache issues."""
+    return __version__
+
 
 def configure_logging(level: int = logging.INFO) -> None:
     """
@@ -441,11 +449,18 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
     Yields:
         Tuples with values in schema order
     """
+    from pyspark.sql.types import TimestampType
+
     field_names = [field.name for field in schema.fields]
     field_types = {field.name: field.dataType for field in schema.fields}
 
+    # Identify timestamp columns for validation
+    timestamp_cols = {name for name, dtype in field_types.items()
+                     if isinstance(dtype, TimestampType)}
+
     logger.debug(f"parse_nemweb_csv: parsing {len(data)} rows with {len(field_names)} fields")
     logger.debug(f"Schema fields: {field_names}")
+    logger.debug(f"Timestamp columns: {timestamp_cols}")
 
     # Log first row's raw values for debugging
     if data and logger.isEnabledFor(logging.DEBUG):
@@ -459,17 +474,26 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
     for row in data:
         row_count += 1
         values = []
-        for name in field_names:
+        for idx, name in enumerate(field_names):
             raw_value = row.get(name)
 
             if raw_value is None or raw_value == "":
                 values.append(None)
             else:
                 converted = _convert_value(raw_value, field_types[name])
-                # Log conversion issues at DEBUG level
-                if converted is None and raw_value:
-                    logger.debug(f"Row {row_count}: {name} conversion returned None "
-                                f"for value {repr(raw_value)}")
+
+                # CRITICAL: Validate timestamp columns - Spark will crash if not datetime or None
+                if name in timestamp_cols:
+                    if converted is not None and not isinstance(converted, datetime):
+                        # This should never happen, but catch it if it does
+                        logger.error(
+                            f"TIMESTAMP VALIDATION FAILED - Row {row_count}, column {name}: "
+                            f"expected datetime, got {type(converted).__name__} = {repr(converted)} "
+                            f"(raw value: {repr(raw_value)})"
+                        )
+                        # Force to None to prevent Spark crash
+                        converted = None
+
                 values.append(converted)
 
         yield tuple(values)
