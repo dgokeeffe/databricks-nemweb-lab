@@ -267,17 +267,121 @@ else:
 
 if FORCE_RELOAD or not table_exists:
     import time
+    import zipfile
+    import io
+    import csv
+    import os
+    from datetime import datetime as dt
+
     start_time = time.time()
 
     print("Loading data from Volume...")
     print("=" * 50)
 
-    # Read from Volume using custom data source
-    df = (spark.read
-        .format("nemweb")
-        .option("volume_path", VOLUME_PATH)
-        .option("table", "DISPATCHREGIONSUM")
-        .load())
+    # Parse files on driver (avoids Spark Connect serialization issues)
+    def parse_nemweb_zip(file_path: str) -> list[tuple]:
+        """Parse a NEMWEB ZIP file and return list of tuples."""
+        rows = []
+        record_type = "DISPATCH,REGIONSUM"
+
+        with open(file_path, 'rb') as f:
+            zip_data = io.BytesIO(f.read())
+
+        with zipfile.ZipFile(zip_data) as zf:
+            for name in zf.namelist():
+                # Handle nested ZIPs
+                if name.lower().endswith(".zip"):
+                    with zf.open(name) as nested_file:
+                        nested_data = io.BytesIO(nested_file.read())
+                        with zipfile.ZipFile(nested_data) as nested_zf:
+                            for nested_name in nested_zf.namelist():
+                                if nested_name.upper().endswith(".CSV"):
+                                    with nested_zf.open(nested_name) as csv_file:
+                                        rows.extend(_parse_csv(csv_file, record_type))
+                elif name.upper().endswith(".CSV"):
+                    with zf.open(name) as csv_file:
+                        rows.extend(_parse_csv(csv_file, record_type))
+
+        return rows
+
+    def _parse_csv(csv_file, record_type: str) -> list[tuple]:
+        """Parse NEMWEB multi-record CSV to tuples."""
+        text = csv_file.read().decode("utf-8")
+        rows = []
+        headers = None
+
+        for parts in csv.reader(io.StringIO(text)):
+            if not parts:
+                continue
+            row_type = parts[0].strip().upper()
+
+            if row_type == "I" and len(parts) > 2:
+                if f"{parts[1]},{parts[2]}" == record_type:
+                    headers = parts[4:]
+
+            elif row_type == "D" and headers and len(parts) > 2:
+                if f"{parts[1]},{parts[2]}" == record_type:
+                    values = parts[4:]
+                    row_dict = dict(zip(headers, values))
+
+                    # Convert to tuple matching schema
+                    ts_val = row_dict.get("SETTLEMENTDATE", "")
+                    ts = None
+                    if ts_val:
+                        for fmt in ["%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"]:
+                            try:
+                                ts = dt.strptime(ts_val.strip(), fmt)
+                                break
+                            except ValueError:
+                                continue
+
+                    def to_float(v):
+                        try:
+                            return float(v) if v else None
+                        except:
+                            return None
+
+                    rows.append((
+                        ts,
+                        row_dict.get("RUNNO"),
+                        row_dict.get("REGIONID"),
+                        row_dict.get("DISPATCHINTERVAL"),
+                        row_dict.get("INTERVENTION"),
+                        to_float(row_dict.get("TOTALDEMAND")),
+                        to_float(row_dict.get("AVAILABLEGENERATION")),
+                        to_float(row_dict.get("AVAILABLELOAD")),
+                        to_float(row_dict.get("DEMANDFORECAST")),
+                        to_float(row_dict.get("DISPATCHABLEGENERATION")),
+                        to_float(row_dict.get("DISPATCHABLELOAD")),
+                        to_float(row_dict.get("NETINTERCHANGE")),
+                    ))
+
+        return rows
+
+    # Get list of ZIP files
+    table_dir = os.path.join(VOLUME_PATH, "dispatchregionsum")
+    zip_files = sorted([
+        os.path.join(table_dir, f)
+        for f in os.listdir(table_dir)
+        if f.endswith('.zip')
+    ])
+
+    print(f"Parsing {len(zip_files)} ZIP files...")
+
+    # Parse all files
+    all_rows = []
+    for i, zf in enumerate(zip_files):
+        all_rows.extend(parse_nemweb_zip(zf))
+        if (i + 1) % 30 == 0:
+            print(f"  Processed {i + 1}/{len(zip_files)} files...")
+
+    print(f"Parsed {len(all_rows):,} rows total")
+
+    # Create DataFrame
+    from nemweb_utils import get_nemweb_schema
+    schema = get_nemweb_schema("DISPATCHREGIONSUM")
+
+    df = spark.createDataFrame(all_rows, schema=schema)
 
     # Write to Delta
     if table_exists:
