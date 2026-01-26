@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Version for debugging - increment when making changes
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 
 def get_version() -> str:
@@ -451,6 +451,9 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
     """
     from pyspark.sql.types import TimestampType
 
+    # Print version for debugging (shows in worker logs)
+    print(f"NEMWEB parse_nemweb_csv v{__version__} - processing {len(data)} rows")
+
     field_names = [field.name for field in schema.fields]
     field_types = {field.name: field.dataType for field in schema.fields}
 
@@ -486,11 +489,15 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
                 if name in timestamp_cols:
                     if converted is not None and not isinstance(converted, datetime):
                         # This should never happen, but catch it if it does
-                        logger.error(
-                            f"TIMESTAMP VALIDATION FAILED - Row {row_count}, column {name}: "
+                        error_msg = (
+                            f"NEMWEB v{__version__} TIMESTAMP VALIDATION FAILED - "
+                            f"Row {row_count}, column {name}: "
                             f"expected datetime, got {type(converted).__name__} = {repr(converted)} "
                             f"(raw value: {repr(raw_value)})"
                         )
+                        # Use print() for worker visibility (logger may not show)
+                        print(error_msg)
+                        logger.error(error_msg)
                         # Force to None to prevent Spark crash
                         converted = None
 
@@ -519,8 +526,14 @@ def _convert_value(value, spark_type):
     if not isinstance(value, str):
         value = str(value)
 
+    # Strip whitespace - critical for timestamp parsing
+    value = value.strip()
+
+    if value == "":
+        return None
+
     if isinstance(spark_type, StringType):
-        return str(value)
+        return value
 
     elif isinstance(spark_type, DoubleType):
         try:

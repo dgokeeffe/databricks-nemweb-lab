@@ -90,7 +90,7 @@ except urllib.error.URLError as e:
 # MAGIC %md
 # MAGIC ## 4. Lab Source Code Installation
 # MAGIC
-# MAGIC Install the nemweb-datasource package from the src folder.
+# MAGIC Build and install the nemweb-datasource package from the src folder.
 # MAGIC
 # MAGIC > **Reference:** [Importing workspace files](https://docs.databricks.com/aws/en/ldp/import-workspace-files)
 
@@ -118,8 +118,44 @@ else:
 
 # COMMAND ----------
 
-# Install the package using pip
-%pip install $src_path -q
+# MAGIC %md
+# MAGIC ### Build the wheel using uv
+# MAGIC
+# MAGIC This ensures we have a fresh build with the latest code.
+
+# COMMAND ----------
+
+import subprocess
+import glob
+
+# Build wheel from src directory using uv
+workspace_root = f"/Workspace{repo_root}"
+build_cmd = f"cd {workspace_root} && uv build src --wheel"
+print(f"Building wheel: {build_cmd}")
+
+result = subprocess.run(build_cmd, shell=True, capture_output=True, text=True)
+if result.returncode == 0:
+    print("✓ Wheel built successfully")
+else:
+    print(f"Build output: {result.stdout}")
+    if result.stderr:
+        print(f"Build errors: {result.stderr}")
+
+# Find the built wheel
+wheel_pattern = f"{src_path}/dist/nemweb_datasource-*.whl"
+wheels = glob.glob(wheel_pattern)
+
+if wheels:
+    # Get the latest wheel (sorted by name, which includes version)
+    latest_wheel = sorted(wheels)[-1]
+    print(f"✓ Found wheel: {latest_wheel}")
+else:
+    raise FileNotFoundError(f"No wheel found at {wheel_pattern}. Check build output above.")
+
+# COMMAND ----------
+
+# Install the wheel (force reinstall to ensure latest version)
+%pip install $latest_wheel --force-reinstall -q
 
 # COMMAND ----------
 
@@ -134,8 +170,11 @@ dbutils.library.restartPython()
 # COMMAND ----------
 
 try:
-    from nemweb_utils import fetch_nemweb_data, get_nemweb_schema, get_nem_regions
+    from nemweb_utils import fetch_nemweb_data, get_nemweb_schema, get_nem_regions, get_version
     print("✓ nemweb_utils imported successfully")
+
+    version = get_version()
+    print(f"  Package version: {version}")
 
     regions = get_nem_regions()
     print(f"  Available NEM regions: {regions}")
@@ -169,11 +208,14 @@ except Exception as e:
 
 # COMMAND ----------
 import sys
+from nemweb_utils import get_version
+
 print("=" * 60)
 print("ENVIRONMENT VALIDATION COMPLETE")
 print("=" * 60)
 print(f"Python:        {sys.version.split()[0]}")
 print(f"Spark:         {spark.version}")
+print(f"nemweb-datasource: v{get_version()}")
 
 # sparkContext not available on serverless
 try:
