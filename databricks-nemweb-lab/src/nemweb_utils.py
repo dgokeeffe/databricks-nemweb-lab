@@ -16,13 +16,13 @@ import io
 import logging
 import zipfile
 from datetime import datetime, timedelta
-from typing import Iterator, Tuple, Optional
+from typing import Iterator, Tuple, Optional, TYPE_CHECKING
 from urllib.request import urlopen, Request
 from urllib.error import HTTPError, URLError
 
-from pyspark.sql.types import (
-    StructType, StructField, StringType, DoubleType, TimestampType, IntegerType
-)
+# Lazy import pyspark types - only needed for schema functions
+if TYPE_CHECKING:
+    from pyspark.sql.types import StructType
 
 logger = logging.getLogger(__name__)
 
@@ -30,15 +30,38 @@ logger = logging.getLogger(__name__)
 NEMWEB_CURRENT_URL = "https://www.nemweb.com.au/REPORTS/CURRENT"
 NEMWEB_ARCHIVE_URL = "https://www.nemweb.com.au/REPORTS/ARCHIVE"
 
-# Mapping of MMS table names to NEMWEB folder paths and file prefixes
-# The table name (e.g., DISPATCHREGIONSUM) is the data inside the CSV
-# The file prefix (e.g., DISPATCHSCADA) is what the ZIP file is named
+# Mapping of MMS table names to NEMWEB folder paths, file prefixes, and record types
+# The NEMWEB CSV format contains multiple record types per file:
+#   C = Comment/metadata
+#   I = Header row for a record type
+#   D = Data row
+# The record_type is used to filter rows from the multi-record CSV
 TABLE_CONFIG = {
-    "DISPATCHREGIONSUM": {"folder": "Dispatch_SCADA", "file_prefix": "DISPATCHSCADA"},
-    "DISPATCHPRICE": {"folder": "DispatchIS_Reports", "file_prefix": "DISPATCHIS"},
-    "TRADINGPRICE": {"folder": "TradingIS_Reports", "file_prefix": "TRADINGIS"},
-    "DISPATCH_UNIT_SCADA": {"folder": "Dispatch_SCADA", "file_prefix": "DISPATCHSCADA"},
-    "ROOFTOP_PV_ACTUAL": {"folder": "ROOFTOP_PV/ACTUAL", "file_prefix": "ROOFTOP_PV_ACTUAL"},
+    "DISPATCHREGIONSUM": {
+        "folder": "DispatchIS_Reports",
+        "file_prefix": "DISPATCHIS",
+        "record_type": "DISPATCH,REGIONSUM"  # Matches I/D rows like "D,DISPATCH,REGIONSUM,..."
+    },
+    "DISPATCHPRICE": {
+        "folder": "DispatchIS_Reports",
+        "file_prefix": "DISPATCHIS",
+        "record_type": "DISPATCH,PRICE"
+    },
+    "TRADINGPRICE": {
+        "folder": "TradingIS_Reports",
+        "file_prefix": "TRADINGIS",
+        "record_type": "TRADING,PRICE"
+    },
+    "DISPATCH_UNIT_SCADA": {
+        "folder": "Dispatch_SCADA",
+        "file_prefix": "DISPATCHSCADA",
+        "record_type": "DISPATCH,UNIT_SCADA"
+    },
+    "ROOFTOP_PV_ACTUAL": {
+        "folder": "ROOFTOP_PV/ACTUAL",
+        "file_prefix": "ROOFTOP_PV_ACTUAL",
+        "record_type": None  # Uses standard CSV format
+    },
 }
 
 # Legacy mapping for backwards compatibility
@@ -139,6 +162,7 @@ def fetch_nemweb_data(
         raise ValueError(f"Unsupported table: {table}. Supported: {list(TABLE_CONFIG.keys())}")
 
     config = TABLE_CONFIG[table]
+    record_type = config.get("record_type")
     rows = []
 
     # Parse date range
@@ -149,7 +173,7 @@ def fetch_nemweb_data(
     while current <= end:
         try:
             url = _build_nemweb_url(config["folder"], config["file_prefix"], current)
-            data = _fetch_and_extract_zip(url)
+            data = _fetch_and_extract_zip(url, record_type=record_type)
 
             # Filter by region if specified
             if region:
@@ -187,12 +211,14 @@ def _build_nemweb_url(folder: str, file_prefix: str, date: datetime) -> str:
         return f"{NEMWEB_ARCHIVE_URL}/{folder}/{filename}"
 
 
-def _fetch_and_extract_zip(url: str, use_retry: bool = True) -> list[dict]:
+def _fetch_and_extract_zip(url: str, record_type: str = None, use_retry: bool = True) -> list[dict]:
     """
     Fetch a ZIP file from URL and extract CSV data.
 
     Args:
         url: URL to the ZIP file
+        record_type: NEMWEB record type filter (e.g., "DISPATCH,REGIONSUM")
+                     If None, uses standard CSV parsing
         use_retry: Whether to use retry logic (default: True)
 
     Returns:
@@ -212,12 +238,84 @@ def _fetch_and_extract_zip(url: str, use_retry: bool = True) -> list[dict]:
     rows = []
     with zipfile.ZipFile(zip_data) as zf:
         for name in zf.namelist():
-            if name.endswith(".CSV") or name.endswith(".csv"):
+            # Handle nested ZIPs (archive files contain ZIPs inside)
+            if name.endswith(".zip") or name.endswith(".ZIP"):
+                with zf.open(name) as nested_zip_file:
+                    nested_zip_data = io.BytesIO(nested_zip_file.read())
+                    with zipfile.ZipFile(nested_zip_data) as nested_zf:
+                        for nested_name in nested_zf.namelist():
+                            if nested_name.endswith(".CSV") or nested_name.endswith(".csv"):
+                                with nested_zf.open(nested_name) as csv_file:
+                                    csv_rows = _parse_nemweb_csv_file(csv_file, record_type)
+                                    rows.extend(csv_rows)
+
+            # Also handle CSVs directly in the ZIP (for CURRENT files)
+            elif name.endswith(".CSV") or name.endswith(".csv"):
                 with zf.open(name) as csv_file:
-                    # NEMWEB CSVs have a header row
-                    text_wrapper = io.TextIOWrapper(csv_file, encoding="utf-8")
-                    reader = csv.DictReader(text_wrapper)
-                    rows.extend(list(reader))
+                    csv_rows = _parse_nemweb_csv_file(csv_file, record_type)
+                    rows.extend(csv_rows)
+
+    return rows
+
+
+def _parse_nemweb_csv_file(csv_file, record_type: str = None) -> list[dict]:
+    """
+    Parse a NEMWEB CSV file, handling the multi-record format.
+
+    NEMWEB CSV format:
+        C,... = Comment/metadata row
+        I,CATEGORY,RECORD_TYPE,VERSION,COL1,COL2,... = Header row
+        D,CATEGORY,RECORD_TYPE,VERSION,VAL1,VAL2,... = Data row
+
+    Args:
+        csv_file: File-like object for the CSV
+        record_type: Record type to filter (e.g., "DISPATCH,REGIONSUM")
+                     If None, uses standard CSV parsing
+
+    Returns:
+        List of dictionaries
+    """
+    text = csv_file.read().decode("utf-8")
+    lines = text.strip().split("\n")
+
+    if not record_type:
+        # Standard CSV format - use DictReader
+        reader = csv.DictReader(io.StringIO(text))
+        return list(reader)
+
+    # NEMWEB multi-record format
+    rows = []
+    headers = None
+
+    for line in lines:
+        if not line.strip():
+            continue
+
+        parts = line.split(",")
+        row_type = parts[0] if parts else ""
+
+        if row_type == "I":
+            # Header row: I,CATEGORY,RECORD_TYPE,VERSION,COL1,COL2,...
+            row_record = f"{parts[1]},{parts[2]}" if len(parts) > 2 else ""
+            if row_record == record_type:
+                # Columns start at index 4 (after I,CATEGORY,RECORD,VERSION)
+                headers = parts[4:]
+
+        elif row_type == "D" and headers:
+            # Data row: D,CATEGORY,RECORD_TYPE,VERSION,VAL1,VAL2,...
+            row_record = f"{parts[1]},{parts[2]}" if len(parts) > 2 else ""
+            if row_record == record_type:
+                # Values start at index 4
+                values = parts[4:]
+                # Create dict, stripping quotes from values
+                row_dict = {}
+                for i, header in enumerate(headers):
+                    if i < len(values):
+                        val = values[i].strip('"')
+                        row_dict[header] = val
+                    else:
+                        row_dict[header] = None
+                rows.append(row_dict)
 
     return rows
 
@@ -285,7 +383,7 @@ def _get_sample_data(table: str, region: Optional[str] = None) -> list[dict]:
     return sample
 
 
-def parse_nemweb_csv(data: list[dict], schema: StructType) -> Iterator[Tuple]:
+def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
     """
     Parse NEMWEB data and yield tuples matching the Spark schema.
 
@@ -314,6 +412,8 @@ def parse_nemweb_csv(data: list[dict], schema: StructType) -> Iterator[Tuple]:
 
 def _convert_value(value: str, spark_type) -> any:
     """Convert string value to appropriate Python type based on Spark type."""
+    from pyspark.sql.types import StringType, DoubleType, IntegerType, TimestampType
+
     if value is None or value == "":
         return None
 
@@ -335,7 +435,7 @@ def _convert_value(value: str, spark_type) -> any:
         return str(value)
 
 
-def get_nemweb_schema(table: str) -> StructType:
+def get_nemweb_schema(table: str) -> "StructType":
     """
     Get the Spark schema for a NEMWEB table.
 
@@ -348,6 +448,10 @@ def get_nemweb_schema(table: str) -> StructType:
     Returns:
         StructType schema for the table
     """
+    from pyspark.sql.types import (
+        StructType, StructField, StringType, DoubleType, TimestampType
+    )
+
     schemas = {
         "DISPATCHREGIONSUM": StructType([
             StructField("SETTLEMENTDATE", TimestampType(), True),
