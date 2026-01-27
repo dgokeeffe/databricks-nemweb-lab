@@ -31,7 +31,7 @@ from datetime import datetime, timedelta
 # Create widgets with defaults - these can be overridden by job parameters
 dbutils.widgets.text("catalog", "workspace", "Catalog Name")
 dbutils.widgets.text("schema", "nemweb_lab", "Schema Name")
-dbutils.widgets.text("table", "nemweb_raw", "Raw Table Name")
+dbutils.widgets.text("table", "nemweb_dispatch_regionsum", "Dispatch Regionsum Table Name")
 dbutils.widgets.text("volume", "raw_files", "Volume Name")
 dbutils.widgets.text("days_history", "180", "Days of History")
 dbutils.widgets.dropdown("force_reload", "false", ["true", "false"], "Force Reload")
@@ -59,7 +59,7 @@ print("Lab Configuration")
 print("=" * 50)
 print(f"Catalog:        {CATALOG}")
 print(f"Schema:         {SCHEMA}")
-print(f"Table:          {RAW_TABLE}")
+print(f"Regionsum Table: {RAW_TABLE}")
 print(f"Volume:         {VOLUME_PATH}")
 print(f"Date range:     {START_DATE} to {END_DATE} ({DAYS_HISTORY} days)")
 print(f"Force reload:   {FORCE_RELOAD_PARAM}")
@@ -429,7 +429,7 @@ if FORCE_RELOAD or not table_exists:
     # Load DISPATCHPRICE (price data) - same files, different record type
     # -------------------------------------------------------------------------
     print("\nLoading DISPATCHPRICE (price data)...")
-    PRICE_TABLE_PATH = f"{CATALOG}.{SCHEMA}.nemweb_prices"
+    PRICE_TABLE_PATH = f"{CATALOG}.{SCHEMA}.nemweb_dispatch_prices"
 
     df_price = (spark.read
           .format("nemweb_arrow")
@@ -452,7 +452,7 @@ if FORCE_RELOAD or not table_exists:
     # Load NEM Registry (generator metadata from OpenNEM)
     # -------------------------------------------------------------------------
     print("\nLoading NEM Registry (generator metadata)...")
-    REGISTRY_TABLE_PATH = f"{CATALOG}.{SCHEMA}.nem_registry"
+    REGISTRY_TABLE_PATH = f"{CATALOG}.{SCHEMA}.nem_generators"
 
     from nem_registry import NemRegistryDataSource
     spark.dataSource.register(NemRegistryDataSource)
@@ -485,16 +485,16 @@ else:
 from databricks.sdk.runtime import display
 from pyspark.sql.functions import min, max, countDistinct, avg, round as spark_round
 
-PRICE_TABLE_PATH = f"{CATALOG}.{SCHEMA}.nemweb_prices"
-REGISTRY_TABLE_PATH = f"{CATALOG}.{SCHEMA}.nem_registry"
+PRICE_TABLE_PATH = f"{CATALOG}.{SCHEMA}.nemweb_dispatch_prices"
+REGISTRY_TABLE_PATH = f"{CATALOG}.{SCHEMA}.nem_generators"
 
 print("=" * 60)
 print("LOADED TABLES")
 print("=" * 60)
 
 for table_name, table_path in [
-    ("Demand/Supply (DISPATCHREGIONSUM)", TABLE_PATH),
-    ("Prices (DISPATCHPRICE)", PRICE_TABLE_PATH),
+    ("Dispatch Regionsum (DISPATCHREGIONSUM)", TABLE_PATH),
+    ("Dispatch Prices (DISPATCHPRICE)", PRICE_TABLE_PATH),
     ("Generator Registry (OpenNEM)", REGISTRY_TABLE_PATH),
 ]:
     if spark.catalog.tableExists(table_path):
@@ -541,8 +541,8 @@ if spark.catalog.tableExists(PRICE_TABLE_PATH):
 
 from nemweb_utils import get_version
 
-PRICE_TABLE_PATH = f"{CATALOG}.{SCHEMA}.nemweb_prices"
-REGISTRY_TABLE_PATH = f"{CATALOG}.{SCHEMA}.nem_registry"
+PRICE_TABLE_PATH = f"{CATALOG}.{SCHEMA}.nemweb_dispatch_prices"
+REGISTRY_TABLE_PATH = f"{CATALOG}.{SCHEMA}.nem_generators"
 
 # Get row counts
 raw_count = spark.table(TABLE_PATH).count() if spark.catalog.tableExists(TABLE_PATH) else 0
@@ -560,15 +560,15 @@ Environment:
 Data Tables:
   {TABLE_PATH}
     - Rows: {raw_count:,}
-    - Contains: TOTALDEMAND, AVAILABLEGENERATION, NETINTERCHANGE
+    - Contains: DISPATCHREGIONSUM data (TOTALDEMAND, AVAILABLEGENERATION, NETINTERCHANGE)
 
   {PRICE_TABLE_PATH}
     - Rows: {price_count:,}
-    - Contains: RRP (Regional Reference Price), EEP
+    - Contains: DISPATCHPRICE data (RRP - Regional Reference Price, EEP)
 
   {REGISTRY_TABLE_PATH}
     - Rows: {registry_count:,}
-    - Contains: DUID, station_name, fuel_category, capacity_mw, lat/lng
+    - Contains: Generator metadata (DUID, station_name, fuel_category, capacity_mw, lat/lng)
     - Source: OpenNEM (github.com/opennem/opennem)
 
 Base Environment (for workspace-wide use):
@@ -583,7 +583,7 @@ Base Environment (for workspace-wide use):
 Next Steps:
   1. Open 01_custom_source_exercise.py for Data Source API
   2. Open databricks-nemweb-analyst-lab/ for price analysis
-  3. Exercise 03 uses the pre-loaded nemweb_raw data
+  3. Exercise 03 uses the pre-loaded nemweb_dispatch_regionsum data
 """)
 print("=" * 60)
 
