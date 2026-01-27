@@ -29,7 +29,7 @@
 from datetime import datetime, timedelta
 
 # Create widgets with defaults - these can be overridden by job parameters
-dbutils.widgets.text("catalog", "main", "Catalog Name")
+dbutils.widgets.text("catalog", "workspace", "Catalog Name")
 dbutils.widgets.text("schema", "nemweb_lab", "Schema Name")
 dbutils.widgets.text("table", "nemweb_raw", "Raw Table Name")
 dbutils.widgets.text("volume", "raw_files", "Volume Name")

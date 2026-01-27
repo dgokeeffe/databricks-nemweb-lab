@@ -32,7 +32,7 @@ from databricks.sdk.runtime import spark, display
 import time
 
 # Create widgets with defaults matching setup notebook
-dbutils.widgets.text("catalog", "main", "Catalog Name")
+dbutils.widgets.text("catalog", "workspace", "Catalog Name")
 dbutils.widgets.text("schema", "nemweb_lab", "Source Schema")
 dbutils.widgets.text("table", "nemweb_raw", "Source Table")
 dbutils.widgets.text("target_schema", "nemweb_optimization_lab", "Target Schema")

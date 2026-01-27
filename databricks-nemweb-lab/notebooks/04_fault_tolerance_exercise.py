@@ -51,6 +51,15 @@ import time
 # Import spark from Databricks SDK for IDE support and local development
 from databricks.sdk.runtime import spark
 
+# Configuration widgets
+dbutils.widgets.text("catalog", "workspace", "Catalog Name")
+dbutils.widgets.text("schema", "nemweb_lab", "Schema Name")
+
+CATALOG = dbutils.widgets.get("catalog")
+SCHEMA = dbutils.widgets.get("schema")
+
+print(f"Using catalog: {CATALOG}, schema: {SCHEMA}")
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -124,7 +133,7 @@ except Exception as e:
 # COMMAND ----------
 
 # Create checkpoint table
-checkpoint_table = "nemweb_checkpoints"
+checkpoint_table = f"{CATALOG}.{SCHEMA}.nemweb_checkpoints"
 
 checkpoint_schema = StructType([
     StructField("partition_id", StringType(), False),
@@ -338,7 +347,8 @@ test_data = [
 ]
 
 test_df = spark.createDataFrame(test_data, ["SETTLEMENTDATE", "REGIONID", "TOTALDEMAND"])
-good_df = process_with_dlq(test_df, "nemweb_dlq")
+dlq_table = f"{CATALOG}.{SCHEMA}.nemweb_dlq"
+good_df = process_with_dlq(test_df, dlq_table)
 
 # COMMAND ----------
 

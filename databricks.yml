@@ -18,7 +18,7 @@ variables:
   # Unity Catalog configuration
   catalog:
     description: "Unity Catalog catalog name"
-    default: "main"
+    default: "workspace"
 
   schema:
     description: "Unity Catalog schema name"

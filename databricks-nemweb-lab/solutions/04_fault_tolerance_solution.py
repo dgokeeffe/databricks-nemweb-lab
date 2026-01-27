@@ -15,6 +15,15 @@ import hashlib
 # Import spark from Databricks SDK for IDE support and local development
 from databricks.sdk.runtime import spark
 
+# Configuration widgets
+dbutils.widgets.text("catalog", "workspace", "Catalog Name")
+dbutils.widgets.text("schema", "nemweb_lab", "Schema Name")
+
+CATALOG = dbutils.widgets.get("catalog")
+SCHEMA = dbutils.widgets.get("schema")
+
+print(f"Using catalog: {CATALOG}, schema: {SCHEMA}")
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -85,7 +94,7 @@ except Exception as e:
 # COMMAND ----------
 
 # Create checkpoint table
-checkpoint_table = "nemweb_checkpoints_solution"
+checkpoint_table = f"{CATALOG}.{SCHEMA}.nemweb_checkpoints_solution"
 
 checkpoint_schema = StructType([
     StructField("partition_id", StringType(), False),
@@ -255,7 +264,7 @@ print(streaming_example)
 # COMMAND ----------
 
 # Create DLQ table
-dlq_table = "nemweb_dlq_solution"
+dlq_table = f"{CATALOG}.{SCHEMA}.nemweb_dlq_solution"
 
 dlq_schema = StructType([
     StructField("SETTLEMENTDATE", StringType(), True),
