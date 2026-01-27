@@ -30,7 +30,7 @@ from pyspark.sql.types import DoubleType, TimestampType, StringType, IntegerType
 logger = logging.getLogger(__name__)
 
 # Version for debugging - increment when making changes
-__version__ = "2.10.15"
+__version__ = "2.10.16"
 
 # Debug file path - check this in DBFS after errors
 DEBUG_LOG_PATH = "/tmp/nemweb_debug.log"
@@ -655,9 +655,9 @@ def _validate_tuple_types(tuple_values: list, schema: "StructType") -> tuple:
     return result
 
 
-def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
+def parse_nemweb_csv(data: list[dict], schema: "StructType", return_rows: bool = True) -> Iterator["Row"]:
     """
-    Parse NEMWEB data and yield tuples matching the Spark schema.
+    Parse NEMWEB data and yield Row objects matching the Spark schema.
 
     All values are coerced to pure Python types for Serverless Arrow compatibility.
     Timestamps are returned as datetime.datetime objects (not pandas/numpy types).
@@ -665,9 +665,14 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
     Args:
         data: List of dictionaries from CSV
         schema: Spark StructType to match
+        return_rows: If True (default), yield Row objects. If False, yield tuples (legacy).
 
     Yields:
-        Tuples with values in schema order (all pure Python types)
+        Row objects with values matching schema field names (all pure Python types)
+        
+    Note:
+        Row objects are recommended for Spark Connect/Serverless. Only use tuples=False
+        for legacy compatibility or when integrating with Arrow RecordBatch objects.
     """
     _debug_log(f"=== parse_nemweb_csv v{__version__} started ===")
     _debug_log(f"Processing {len(data)} rows")
@@ -885,11 +890,20 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
                                   f"isinstance(datetime)={is_datetime_instance}, "
                                   f"type is datetime={dt_type is datetime}")
             
-            _debug_log(f"Row {row_num}: YIELDING tuple with {len(final_tuple)} values")
+            _debug_log(f"Row {row_num}: YIELDING {'Row' if return_rows else 'tuple'} with {len(final_tuple)} values")
             
             # Try to yield and catch any serialization errors
             try:
-                yield final_tuple
+                if return_rows:
+                    # Yield Row object (default, recommended for Spark Connect)
+                    from pyspark.sql import Row
+                    # Create Row with field names as keyword arguments
+                    row_dict = {field.name: val for field, val in zip(schema.fields, final_tuple)}
+                    row_obj = Row(**row_dict)
+                    yield row_obj
+                else:
+                    # Yield tuple (legacy approach - only for special cases)
+                    yield final_tuple
             except Exception as yield_error:
                 _debug_log(f"Row {row_num}: YIELD ERROR - {type(yield_error).__name__}: {yield_error}")
                 # Try to identify which field is causing the issue

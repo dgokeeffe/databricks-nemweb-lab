@@ -5,7 +5,7 @@ This file defines the pipeline datasets using the pyspark.pipelines API.
 Can be validated locally with: spark-pipelines dry-run
 
 Usage:
-    cd src/pipeline
+    cd pipelines
     spark-pipelines dry-run
     spark-pipelines run
 """

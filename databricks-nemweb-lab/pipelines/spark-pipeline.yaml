@@ -1,5 +1,10 @@
 # Spark Declarative Pipeline Spec
 # For local testing with spark-pipelines CLI
+#
+# Usage:
+#   cd pipelines
+#   spark-pipelines dry-run
+#   spark-pipelines run
 
 name: nemweb-pipeline
 catalog: spark_catalog

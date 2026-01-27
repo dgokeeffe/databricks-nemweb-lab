@@ -127,11 +127,12 @@ NEMWEB API (HTTP/ZIP/CSV) → Custom Datasource → Lakeflow Pipeline (DLT)
 - `PriceAlertWriter` - Triggers alerts when prices exceed thresholds
 - `MetricsDataSource` - Publishes metrics to observability endpoints
 
-**src/pipeline/nemweb_pipeline.py** - Spark Declarative Pipeline definitions:
+**pipelines/nemweb_pipeline.py** - Spark Declarative Pipeline definitions:
 - Bronze layer: Raw NEMWEB ingestion with ingestion timestamp
 - Silver layer: Data cleansing, type casting, and quality expectations
 - Gold layer: Hourly aggregations
 - Uses `@dp.table()` decorators from `pyspark.pipelines`
+- Isolated from exercise/transformation code for production use
 
 **app/app.py** - Dash dashboard with:
 - Live price cards for 5 NEM regions (NSW1, QLD1, SA1, VIC1, TAS1)
@@ -139,9 +140,12 @@ NEMWEB API (HTTP/ZIP/CSV) → Custom Datasource → Lakeflow Pipeline (DLT)
 - Price thresholds: Warning $100, Alert $300, Critical $1000/MWh
 
 ### Directory Structure
-- `databricks-nemweb-lab/src/` - Core Python library (datasource, utils, sinks, pipeline)
+- `databricks-nemweb-lab/src/` - Core Python library (datasource, utils, sinks)
   - Packaged as `nemweb_datasource` (see `setup.py` and `pyproject.toml`)
   - Installable via `pip install -e .` for local development
+- `databricks-nemweb-lab/pipelines/` - Production Lakeflow pipeline definitions
+  - Isolated from exercise/transformation code
+  - Contains `nemweb_pipeline.py` and `spark-pipeline.yaml`
 - `databricks-nemweb-lab/notebooks/` - Lab exercises (00-04)
 - `databricks-nemweb-lab/solutions/` - Reference solutions (for instructors)
 - `databricks-nemweb-lab/app/` - Databricks App dashboard

@@ -33,7 +33,7 @@ variables:
 sync:
   include:
     - "databricks-nemweb-lab/src/*.py"
-    - "databricks-nemweb-lab/src/pipeline/**"
+    - "databricks-nemweb-lab/pipelines/**"
     - "databricks-nemweb-lab/notebooks/**"
     - "databricks-nemweb-lab/solutions/**"
     - "databricks-nemweb-lab/artifacts/**"
@@ -68,9 +68,9 @@ resources:
       schema: "${var.schema}"
       libraries:
         - file:
-            path: "./databricks-nemweb-lab/src/pipeline/nemweb_pipeline.py"
+            path: "./databricks-nemweb-lab/pipelines/nemweb_pipeline.py"
       configuration:
-        bundle.sourcePath: ${workspace.file_path}/databricks-nemweb-lab/src
+        bundle.sourcePath: ${workspace.file_path}/databricks-nemweb-lab/pipelines
 
   jobs:
     nemweb_lab_workflow:

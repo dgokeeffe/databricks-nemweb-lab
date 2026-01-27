@@ -62,9 +62,10 @@ class HelloWorldReader(DataSourceReader):
         self.count = int(options.get("count", 5))
 
     def read(self, partition):
-        # Yield tuples matching the schema: (id, message)
+        # Yield Row objects matching the schema (recommended for Spark Connect)
+        from pyspark.sql import Row
         for i in range(self.count):
-            yield (i, f"Hello, World #{i}!")
+            yield Row(id=i, message=f"Hello, World #{i}!")
 
 # Register and test it!
 spark.dataSource.register(HelloWorldDataSource)
@@ -78,9 +79,12 @@ display(df)
 # MAGIC
 # MAGIC That's it! A custom data source is:
 # MAGIC - **DataSource class**: Declares the name, schema, and creates a reader
-# MAGIC - **DataSourceReader class**: Has a `read()` method that yields tuples
+# MAGIC - **DataSourceReader class**: Has a `read()` method that yields Row objects
 # MAGIC
-# MAGIC The tuples you yield **must match** the schema field order.
+# MAGIC The Row objects you yield **must match** the schema field names.
+# MAGIC 
+# MAGIC **Note:** Row objects are the standard for custom datasources (recommended for Spark Connect/Serverless).
+# MAGIC Only Arrow datasources yield PyArrow RecordBatch objects directly.
 
 # COMMAND ----------
 
@@ -317,7 +321,7 @@ class NemwebReader(DataSourceReader):
         # TODO: Implement this method
         pass
 
-    def read(self, partition: NemwebPartition) -> Iterator[Tuple]:
+    def read(self, partition: NemwebPartition):
         """
         Read data for a single partition (runs on workers).
 
@@ -332,11 +336,14 @@ class NemwebReader(DataSourceReader):
            - debug=True  # Print debug info to help diagnose issues
            - target_date=self.start_date  # Filter files by date (handles timezone issues)
 
-        2. Call parse_nemweb_csv(data, self.schema) to convert to tuples
+        2. Call parse_nemweb_csv(data, self.schema) to convert to Row objects
+           (return_rows=True is the default - Row objects are always used unless using Arrow)
 
-        3. Yield each tuple from the result
+        3. Yield each Row from the result
 
-        Note: The target_date parameter filters files by date extracted from filenames
+        Note: Row objects are the standard for custom datasources (recommended for Spark Connect/Serverless).
+              Only Arrow datasources yield PyArrow RecordBatch objects directly.
+        The target_date parameter filters files by date extracted from filenames
         (format: PUBLIC_DISPATCHIS_YYYYMMDDHHMM_*.zip). This ensures we get files
         from the correct date even with timezone differences.
 
@@ -353,8 +360,8 @@ class NemwebReader(DataSourceReader):
             if not data:
                 import sys
                 print(f"[WORKER] WARNING: No data fetched for region {partition.region}, date {self.start_date}", file=sys.stderr)
-            for row_tuple in parse_nemweb_csv(data, self.schema):
-                yield row_tuple
+            for row in parse_nemweb_csv(data, self.schema):
+                yield row
         """
         # TODO: Implement this method
         pass
