@@ -1,0 +1,21 @@
+command:
+  - gunicorn
+  - app:server
+  - --bind
+  - 0.0.0.0:8000
+  - --workers
+  - "2"
+
+env:
+  - name: DATABRICKS_WAREHOUSE_ID
+    valueFrom: resources.sql_warehouse.id
+  - name: DATABRICKS_HOST
+    valueFrom: resources.workspace.host
+  - name: DATABRICKS_TOKEN
+    valueFrom: resources.credentials.token
+
+resources:
+  sql_warehouse:
+    permission: CAN_USE
+  credentials:
+    permission: CAN_USE

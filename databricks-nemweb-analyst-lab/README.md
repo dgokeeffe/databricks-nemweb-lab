@@ -59,13 +59,22 @@ databricks-nemweb-analyst-lab/
 │   ├── 01_ddl_curated_nem_prices.sql     # Curated view DDL (joins real AEMO data)
 │   ├── 02_sample_queries.sql             # Demo queries for SQL Editor
 │   └── 03_metric_view.sql                # Metric view definition
+├── dashboard/
+│   ├── README.md                          # Dashboard setup guide
+│   └── dashboard_queries.sql             # 10 queries for dashboard widgets
+├── app/
+│   ├── app.py                            # Dash analytics app
+│   ├── app.yaml                          # Databricks App config
+│   ├── requirements.txt                  # Python dependencies
+│   └── README.md                         # App deployment guide
 ├── data/
 │   ├── README.md                          # Data loading instructions
 │   └── sample_curated_nem_prices.csv     # Fallback synthetic data (if needed)
 ├── notebooks/
 │   └── 95th_percentile_analysis.py       # Optional PySpark analysis
 └── docs/
-    ├── demo_outline.md                   # Presenter guide (0-60 min)
+    ├── facilitator_guide.md              # Full facilitator guide with timings
+    ├── demo_outline.md                   # Quick presenter reference
     ├── genie_setup.md                    # Genie space configuration
     └── powerbi_connection.md             # Power BI connection steps
 ```
@@ -85,17 +94,18 @@ Data is 5-minute dispatch intervals for all 5 NEM regions (NSW1, QLD1, VIC1, SA1
 
 ## Demo Agenda (60 min)
 
-| Time | Section | Key Demo |
-|------|---------|----------|
-| 0-5 | Context | Databricks as governed AI layer |
-| 5-12 | Curated Data | `curated_nem_prices` in Catalog Explorer |
-| 12-25 | **Genie** | Natural language NEM queries |
-| 25-35 | Assistant | SQL generation in SQL Editor |
-| 35-45 | Metric Views | Semantic layer + dashboard |
-| 45-55 | Workflow Mapping | Map Excel/Power BI to Databricks |
-| 55-60 | Wrap-up | Next steps |
+| Time | Duration | Section | Key Demo |
+|------|----------|---------|----------|
+| 0:00 | 5 min | **Getting Started** | Databricks free edition signup |
+| 0:05 | 5 min | **Curated Data** | Unity Catalog Explorer |
+| 0:10 | 12 min | **AI/BI Genie** | Natural language queries ⭐ |
+| 0:22 | 8 min | **Assistant** | SQL generation |
+| 0:30 | 8 min | **Dashboard** | SQL Dashboard with KPIs |
+| 0:38 | 7 min | **App** | Interactive analytics app |
+| 0:45 | 10 min | **Discussion** | Map Excel/PBI to Databricks |
+| 0:55 | 5 min | **Wrap-up** | Next steps |
 
-See `docs/demo_outline.md` for the full presenter script.
+See `docs/facilitator_guide.md` for the full presenter script with talking points.
 
 ## Key Artefacts
 

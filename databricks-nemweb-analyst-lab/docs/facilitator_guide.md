@@ -11,7 +11,9 @@
 - [ ] SQL Warehouse running and warmed up
 - [ ] Genie space accessible and tested
 - [ ] Sample queries ready in SQL Editor tabs
-- [ ] Power BI (optional) connected and showing data
+- [ ] Dashboard deployed and working
+- [ ] App deployed and accessible
+- [ ] Power BI (optional) connected
 - [ ] Screen sharing working
 - [ ] Attendee list and names ready
 
@@ -21,11 +23,12 @@
 
 | Time | Duration | Section | Key Demo |
 |------|----------|---------|----------|
-| 0:00 | 5 min | **Getting Started** | Databricks Community Edition signup |
-| 0:05 | 7 min | **Curated Data** | Unity Catalog Explorer |
-| 0:12 | 13 min | **AI/BI Genie** | Natural language queries ⭐ |
-| 0:25 | 10 min | **Databricks Assistant** | SQL generation in editor |
-| 0:35 | 10 min | **Metric Views** | Semantic layer + dashboard |
+| 0:00 | 5 min | **Getting Started** | Databricks free edition signup |
+| 0:05 | 5 min | **Curated Data** | Unity Catalog Explorer |
+| 0:10 | 12 min | **AI/BI Genie** | Natural language queries ⭐ |
+| 0:22 | 8 min | **Databricks Assistant** | SQL generation |
+| 0:30 | 8 min | **Dashboard** | SQL Dashboard with KPIs |
+| 0:38 | 7 min | **Databricks App** | Interactive analytics app |
 | 0:45 | 10 min | **Workflow Discussion** | Map Excel/PBI to Databricks |
 | 0:55 | 5 min | **Wrap-up** | Next steps & resources |
 
@@ -55,9 +58,9 @@
 
 ---
 
-## Section 2: Curated Data in Unity Catalog (0:05 - 0:12)
+## Section 2: Curated Data in Unity Catalog (0:05 - 0:10)
 
-**Duration:** 7 minutes
+**Duration:** 5 minutes
 **Goal:** Show governed, documented data assets
 
 ### Demo Steps
@@ -69,27 +72,19 @@
 2. **Click into `curated_nem_prices`**:
    - Show Schema tab with column descriptions
    - Show Sample Data tab
-   - Show Lineage tab (if available)
+   - Mention lineage (data comes from AEMO)
 
 ### Talking Points
 
 > "This is Unity Catalog - Databricks' governance layer. Notice every column has a description. This metadata powers AI features like Genie."
 
-> "Unlike a shared drive or local Excel files, this data has:
-> - Version history (time travel)
-> - Access controls (who can see what)
-> - Lineage (where did this data come from)"
-
-### Questions to Expect
-
-- "Who manages these descriptions?" → Data stewards or engineers
-- "Can we connect Excel to this?" → Yes, via ODBC or export
+> "This is real AEMO data from the National Electricity Market - 6 months of dispatch prices and demand across all 5 NEM regions."
 
 ---
 
-## Section 3: AI/BI Genie (0:12 - 0:25) ⭐
+## Section 3: AI/BI Genie (0:10 - 0:22) ⭐
 
-**Duration:** 13 minutes
+**Duration:** 12 minutes
 **Goal:** Demonstrate natural language analytics - the "wow moment"
 
 ### Demo Steps
@@ -108,101 +103,118 @@
    **Question 2** (comparison):
    > "How does that compare to QLD?"
 
-   - Shows Genie maintains context from previous question
+   - Shows Genie maintains context
 
    **Question 3** (visualization):
    > "Show me a line chart of daily average price by region for the last 30 days"
 
-   - Demonstrates chart generation
-
    **Question 4** (domain-specific):
    > "When were the top 5 demand peaks in VIC, and what were the prices?"
 
-   - Shows understanding of NEM terminology
-
-3. **Invite audience questions**:
-   > "What would YOU like to ask about NEM prices? Give me a question in the chat."
-
-   - Take 2-3 real questions from attendees
-   - If Genie struggles, show how to rephrase
+3. **Invite 1-2 audience questions** (if time)
 
 ### Talking Points
 
-> "Genie isn't magic - it's powered by the column descriptions and context we set up. The better your metadata, the better Genie performs."
+> "Genie isn't magic - it's powered by the column descriptions we set up. The better your metadata, the better Genie performs."
 
-> "Notice I can always see the SQL. This isn't a black box - you can verify, modify, or save these queries."
-
-### Troubleshooting
-
-- **Genie gives wrong answer**: "Let me rephrase that..." (shows learning opportunity)
-- **Slow response**: "The first query warms up the warehouse..."
-- **Attendee question fails**: "Great question - this shows where we need better metadata"
+> "Notice I can always see the SQL. This isn't a black box."
 
 ---
 
-## Section 4: Databricks Assistant (0:25 - 0:35)
+## Section 4: Databricks Assistant (0:22 - 0:30)
 
-**Duration:** 10 minutes
+**Duration:** 8 minutes
 **Goal:** Show AI-assisted SQL development
 
 ### Demo Steps
 
 1. **Open SQL Editor**
 
-2. **Open Assistant panel** (usually right sidebar)
-
-3. **Ask Assistant to write SQL**:
+2. **Ask Assistant**:
    > "Write a query to compare peak vs off-peak average prices by region for the last week"
 
-4. **Show the generated SQL**, run it
+3. **Run the generated SQL**
 
-5. **Ask for refinement**:
-   > "Add a column showing the percentage difference between peak and off-peak"
-
-6. **Show "Explain" feature**:
-   - Highlight complex SQL from `02_sample_queries.sql`
-   - Ask Assistant to explain it
+4. **Ask for refinement**:
+   > "Add the percentage difference between peak and off-peak"
 
 ### Talking Points
 
-> "Assistant is different from Genie. Genie is for end users asking business questions. Assistant is for analysts and developers writing SQL."
+> "Assistant is for analysts writing SQL. Genie is for end users asking business questions."
 
-> "Think of it as pair programming - it drafts, you verify and refine."
+> "Think of it as pair programming - it drafts, you verify."
 
 ---
 
-## Section 5: Metric Views (0:35 - 0:45)
+## Section 5: SQL Dashboard (0:30 - 0:38)
 
-**Duration:** 10 minutes
-**Goal:** Show semantic layer concept
+**Duration:** 8 minutes
+**Goal:** Show pre-built dashboard with KPIs and charts
 
 ### Demo Steps
 
-1. **Show metric view definition** (read-only):
-   - Open `03_metric_view.sql` or show in Catalog
-   - Point out dimensions vs measures
+1. **Open the NEM Price Analytics dashboard**
 
-2. **Query the metric view**:
-   ```sql
-   SELECT region_id, date, avg_price, price_volatility
-   FROM workspace.nemweb_lab.mv_nem_price_metrics
-   WHERE date >= current_date() - INTERVAL 7 DAYS
-   ORDER BY date;
-   ```
+2. **Walk through the widgets**:
+   - **KPI counters**: Avg price, peak demand, spike count
+   - **Price trend**: Line chart by region over time
+   - **Regional summary**: Table with volatility metrics
+   - **Peak vs off-peak**: Comparison bar chart
 
-3. **Show a dashboard** (if prepared):
-   - Pre-built visualizations using the metric view
-   - Same measures, consistent everywhere
+3. **Show interactivity**:
+   - Click on a region to filter
+   - Hover for tooltips
+   - Show the underlying SQL (click widget menu)
+
+4. **Mention scheduling**:
+   > "This dashboard can be scheduled to refresh automatically and email reports"
 
 ### Talking Points
 
-> "A metric view is like a single source of truth for calculations. 'Average price' means the same thing whether you're in Genie, SQL, a dashboard, or Power BI."
+> "Anyone with SQL access can build these dashboards - no BI tool license required."
 
-> "In Excel, you might have 5 different spreadsheets with 5 different formulas for 'average price'. Metric views solve that."
+> "The data is live from the same curated view Genie uses. One source, many views."
 
 ---
 
-## Section 6: Workflow Discussion (0:45 - 0:55)
+## Section 6: Databricks App (0:38 - 0:45)
+
+**Duration:** 7 minutes
+**Goal:** Show custom interactive application
+
+### Demo Steps
+
+1. **Open the NEM Analytics App** (in browser)
+
+2. **Show the features**:
+   - Regional KPI cards with live prices
+   - Date range selector
+   - Region filter
+   - Interactive charts
+
+3. **Explain the architecture**:
+   > "This is a Python Dash app hosted on Databricks. It queries the same curated_nem_prices view."
+
+4. **Show responsiveness**:
+   - Change date range → charts update
+   - Filter regions → KPIs recalculate
+
+### Talking Points
+
+> "Databricks Apps let you build custom interfaces for your users. This one took about an hour to build."
+
+> "The app uses the same SQL Warehouse and data as everything else - no data copying."
+
+### If App Not Deployed
+
+Show the code structure instead:
+- `app/app.py` - the main application
+- `app/app.yaml` - deployment config
+- Explain it can be deployed in minutes
+
+---
+
+## Section 7: Workflow Discussion (0:45 - 0:55)
 
 **Duration:** 10 minutes
 **Goal:** Map current Excel/Power BI workflows to Databricks
@@ -218,22 +230,24 @@
    - Who else needs this analysis?
 
 3. **Map to Databricks**:
-   | Current | Databricks Equivalent |
-   |---------|----------------------|
-   | Excel pivot table | SQL query or Genie |
+
+   | Current Workflow | Databricks Solution |
+   |------------------|---------------------|
+   | Excel pivot table | Genie or Dashboard |
    | Manual data pull | Scheduled pipeline |
    | Emailing spreadsheets | Shared dashboard |
-   | Power BI report | Same, but governed source |
+   | Power BI report | Same report, governed source |
+   | Custom Excel model | Databricks App |
 
 ### Talking Points
 
-> "Databricks isn't replacing Excel - it's replacing the messy data prep before Excel. You still get your final numbers in whatever tool you prefer."
+> "Databricks isn't replacing Excel - it's replacing the messy data prep before Excel."
 
 > "The goal is: one governed source, many consumption options."
 
 ---
 
-## Section 7: Wrap-up (0:55 - 1:00)
+## Section 8: Wrap-up (0:55 - 1:00)
 
 **Duration:** 5 minutes
 **Goal:** Clear next steps
@@ -244,7 +258,8 @@
    - Governed data in Unity Catalog
    - Natural language queries with Genie
    - AI-assisted SQL with Assistant
-   - Semantic layer with Metric Views
+   - Self-service dashboards
+   - Custom analytics apps
 
 2. **What Databricks brings**:
    - Single source of truth
@@ -259,13 +274,13 @@
 
 ### Resources to Share
 
-- Databricks Community Edition: https://databricks.com/try-databricks
-- Genie Documentation: https://docs.databricks.com/genie/
-- Metric Views: https://docs.databricks.com/metric-views/
+- Databricks Free: https://databricks.com/try-databricks
+- Genie Docs: https://docs.databricks.com/genie/
+- Apps Docs: https://docs.databricks.com/apps/
 
 ---
 
-## Backup Content (if time permits or questions arise)
+## Backup Content (if time permits)
 
 ### Price Spike Analysis
 
@@ -278,11 +293,22 @@ GROUP BY date, region_id
 ORDER BY max_price DESC;
 ```
 
-### Power BI Connection Demo
+### Metric Views (Optional Section)
+
+If audience is technical, show the metric view:
+```sql
+SELECT region_id, date, avg_price, price_volatility
+FROM workspace.nemweb_lab.mv_nem_price_metrics
+WHERE date >= current_date() - INTERVAL 7 DAYS;
+```
+
+> "Metric views define calculations once, use everywhere."
+
+### Power BI Connection
 
 If someone asks about Power BI:
-1. Show `docs/powerbi_connection.md`
-2. Explain: "Power BI connects directly to these tables via Partner Connect or ODBC"
+- Show `docs/powerbi_connection.md`
+- Explain: "Power BI connects directly via Partner Connect or ODBC"
 
 ### Generator Metadata
 
@@ -292,9 +318,45 @@ If someone asks about generation data:
 
 ---
 
+## Pre-Workshop Setup (for Facilitator)
+
+### Deploy Dashboard
+
+1. Open SQL Editor
+2. Run queries from `dashboard/dashboard_queries.sql`
+3. Create dashboard with widgets (see `dashboard/README.md`)
+4. Test all visualizations load correctly
+
+### Deploy App
+
+```bash
+# Create app
+databricks apps create nem-analytics
+
+# Import to workspace first
+databricks workspace import-dir app /Workspace/Users/<your-email>/nem-analytics-app
+
+# Deploy
+databricks apps deploy nem-analytics --source-code-path /Workspace/Users/<your-email>/nem-analytics-app
+```
+
+Configure SQL Warehouse in app settings.
+
+### Setup Genie Space
+
+Follow `docs/genie_setup.md`:
+1. Create space "NEM Trading Analytics"
+2. Add datasets: `curated_nem_prices`, `mv_nem_price_metrics`
+3. Add context instructions
+4. Add example questions
+5. Test with sample questions
+
+---
+
 ## Post-Workshop
 
 - [ ] Share recording (if recorded)
 - [ ] Send links to resources
+- [ ] Share dashboard/app URLs
 - [ ] Follow up on identified pilot datasets
 - [ ] Schedule hands-on session if interest
