@@ -13,6 +13,10 @@ from pyspark.sql.functions import col, current_timestamp, expr, avg, max, min, c
 # Import spark from Databricks SDK for IDE support and local development
 from databricks.sdk.runtime import spark
 
+# Import and register our production Arrow data source
+from nemweb_datasource_arrow import NemwebArrowDataSource
+spark.dataSource.register(NemwebArrowDataSource)
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -30,13 +34,14 @@ from databricks.sdk.runtime import spark
 )
 def nemweb_bronze():
     """
-    Ingest raw NEMWEB data using custom data source.
+    Ingest raw NEMWEB data using production Arrow data source.
 
     SOLUTION 2.1: Complete bronze table
     """
     return (
         spark.read
-        .format("nemweb")  # Our custom data source
+        .format("nemweb_arrow")  # Production Arrow data source
+        .option("table", "DISPATCHREGIONSUM")  # Demand/generation data
         .option("regions", "NSW1,QLD1,SA1,VIC1,TAS1")  # All 5 NEM regions
         .option("start_date", spark.conf.get("nemweb.start_date", "2024-01-01"))
         .option("end_date", spark.conf.get("nemweb.end_date", "2024-01-31"))

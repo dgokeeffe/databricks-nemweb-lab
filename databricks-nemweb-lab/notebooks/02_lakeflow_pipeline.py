@@ -29,7 +29,7 @@
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Setup: Import Lakeflow
+# MAGIC ## Setup: Import Lakeflow and Data Source
 
 # COMMAND ----------
 
@@ -41,8 +41,9 @@ from pyspark.sql.types import StructType, StructField, StringType, DoubleType, T
 # Import spark from Databricks SDK for IDE support and local development
 from databricks.sdk.runtime import spark
 
-# Import our custom data source (from Exercise 1)
-# This would normally be: from nemweb_datasource import NemwebDataSource
+# Import and register our production Arrow data source
+from nemweb_datasource_arrow import NemwebArrowDataSource
+spark.dataSource.register(NemwebArrowDataSource)
 
 # COMMAND ----------
 
@@ -65,19 +66,22 @@ from databricks.sdk.runtime import spark
 )
 def nemweb_bronze():
     """
-    TODO 2.1: Read from your custom NEMWEB data source (from Exercise 1).
+    TODO 2.1: Read from the production NEMWEB Arrow data source.
 
     Steps:
-    1. Use spark.read.format("nemweb") to read from your custom data source
-    2. Add .option("regions", "NSW1,QLD1,SA1,VIC1,TAS1") for all NEM regions
-    3. Add .option("start_date", ...) and .option("end_date", ...) using spark.conf.get()
-    4. Call .load() to execute the read
-    5. Add an _ingested_at column using .withColumn("_ingested_at", current_timestamp())
+    1. Use spark.read.format("nemweb_arrow") to read from the Arrow data source
+    2. Add .option("table", "DISPATCHREGIONSUM") for the demand table
+    3. Add .option("regions", "NSW1,QLD1,SA1,VIC1,TAS1") for all NEM regions
+    4. Add .option("start_date", ...) and .option("end_date", ...) using spark.conf.get()
+    5. Call .load() to execute the read
+    6. Add an _ingested_at column using .withColumn("_ingested_at", current_timestamp())
 
     Hint: The pattern looks like:
         spark.read
-        .format("...")
-        .option("key", "value")
+        .format("nemweb_arrow")
+        .option("table", "DISPATCHREGIONSUM")
+        .option("regions", "...")
+        .option("start_date", spark.conf.get("nemweb.start_date", "2024-01-01"))
         .load()
         .withColumn(...)
 
@@ -85,7 +89,8 @@ def nemweb_bronze():
     """
     return (
         spark.read
-        .format("nemweb")  # TODO: Your custom data source from Exercise 1
+        .format("nemweb_arrow")  # Production Arrow data source
+        .option("table", "DISPATCHREGIONSUM")
         # TODO: Add .option() calls for regions, start_date, end_date
         # Hint: Use spark.conf.get("nemweb.start_date", "2024-01-01") for dates
         .load()
