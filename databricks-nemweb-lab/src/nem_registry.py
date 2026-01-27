@@ -62,34 +62,63 @@ def get_fuel_category(fueltech: str) -> str:
     return "other"
 
 
-def _get_data_path() -> Path:
-    """Get path to data directory."""
-    # Try relative to this file first
-    local_path = Path(__file__).parent.parent / "data" / "nem_stations.json"
+# OpenNEM GitHub URL for latest station data
+OPENNEM_STATIONS_URL = "https://raw.githubusercontent.com/opennem/opennem/master/opennem/data/stations.json"
+
+
+def _fetch_from_opennem() -> list[dict]:
+    """Fetch latest station data from OpenNEM GitHub."""
+    import urllib.request
+    from urllib.error import HTTPError, URLError
+
+    try:
+        request = urllib.request.Request(
+            OPENNEM_STATIONS_URL,
+            headers={"User-Agent": "DatabricksNemwebLab/2.0"}
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            data = response.read().decode('utf-8')
+            return json.loads(data)
+    except (HTTPError, URLError) as e:
+        logger.warning(f"Failed to fetch from OpenNEM: {e}")
+        return []
+
+
+def _get_local_data_path() -> Optional[Path]:
+    """Get path to local data file (fallback)."""
+    # Try same directory as this module (for wheel installation)
+    module_dir = Path(__file__).parent
+    wheel_path = module_dir / "nem_stations.json"
+    if wheel_path.exists():
+        return wheel_path
+
+    # Try relative to this file (for local development)
+    local_path = module_dir.parent / "data" / "nem_stations.json"
     if local_path.exists():
         return local_path
 
-    # Try Databricks workspace path
-    workspace_paths = [
-        Path("/Workspace/Repos") / "databricks-nemweb-lab" / "data" / "nem_stations.json",
-        Path("/Workspace/Users") / "databricks-nemweb-lab" / "data" / "nem_stations.json",
-    ]
-    for p in workspace_paths:
-        if p.exists():
-            return p
-
-    return local_path  # Return default even if not found
+    return None
 
 
 def load_registry_data() -> list[dict]:
-    """Load registry data from JSON file."""
-    stations_path = _get_data_path()
+    """
+    Load registry data from OpenNEM GitHub (primary) or local file (fallback).
 
-    if not stations_path.exists():
-        logger.warning(f"Registry file not found: {stations_path}")
-        return []
+    Fetches the latest station data from OpenNEM's GitHub repository.
+    Falls back to bundled JSON file if network is unavailable.
+    """
+    # Try fetching latest from OpenNEM
+    stations = _fetch_from_opennem()
 
-    stations = json.loads(stations_path.read_text())
+    if not stations:
+        # Fallback to local file
+        local_path = _get_local_data_path()
+        if local_path and local_path.exists():
+            logger.info(f"Using local fallback: {local_path}")
+            stations = json.loads(local_path.read_text())
+        else:
+            logger.warning("No station data available (network failed, no local fallback)")
+            return []
 
     # Build flat list of DUIDs with metadata
     rows = []
