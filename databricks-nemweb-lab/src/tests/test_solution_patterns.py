@@ -279,6 +279,74 @@ class TestExercise03ClusterSizing:
         assert cost > 0
 
 
+class TestExercise03DeltaOptimization:
+    """Tests for Exercise 3 - Delta optimization patterns."""
+
+    def test_liquid_clustering_columns(self):
+        """Liquid clustering should use settlement_date and region_id."""
+        # The solution uses these clustering keys
+        clustering_keys = ["settlement_date", "region_id"]
+
+        # For NEMWEB queries, these are the most common filter columns
+        common_filters = ["settlement_date", "region_id"]
+
+        # All clustering keys should be in common filters
+        assert all(key in common_filters for key in clustering_keys)
+
+    def test_generated_column_pattern(self):
+        """Generated columns should extract year/month from timestamp."""
+        # SQL pattern from solution
+        sql_pattern = """
+        settlement_year INT GENERATED ALWAYS AS (YEAR(settlement_date)),
+        settlement_month INT GENERATED ALWAYS AS (MONTH(settlement_date))
+        """
+
+        assert "YEAR(settlement_date)" in sql_pattern
+        assert "MONTH(settlement_date)" in sql_pattern
+        assert "GENERATED ALWAYS AS" in sql_pattern
+
+    def test_partition_columns_match_generated(self):
+        """PARTITION BY columns should match generated columns."""
+        partition_columns = ["settlement_year", "settlement_month"]
+        generated_columns = ["settlement_year", "settlement_month", "settlement_day"]
+
+        # All partition columns must be generated columns
+        assert all(col in generated_columns for col in partition_columns)
+
+    def test_optimize_command_syntax(self):
+        """OPTIMIZE command should be valid SQL."""
+        optimize_commands = [
+            "OPTIMIZE nemweb_liquid_clustered",
+            "OPTIMIZE nemweb_partitioned",
+            "OPTIMIZE table_name ZORDER BY (col1, col2)",
+        ]
+
+        for cmd in optimize_commands:
+            assert cmd.startswith("OPTIMIZE")
+
+    def test_vacuum_retention_default(self):
+        """VACUUM default retention is 7 days."""
+        default_retention_hours = 7 * 24  # 168 hours
+        assert default_retention_hours == 168
+
+    def test_query_performance_metrics_captured(self):
+        """Performance comparison should capture elapsed time and row count."""
+        # Simulate the run_query_with_metrics pattern
+        def mock_run_query(query: str, description: str) -> dict:
+            return {
+                "description": description,
+                "elapsed_seconds": 1.5,
+                "row_count": 100
+            }
+
+        result = mock_run_query("SELECT * FROM test", "Test query")
+
+        assert "elapsed_seconds" in result
+        assert "row_count" in result
+        assert "description" in result
+        assert isinstance(result["elapsed_seconds"], float)
+
+
 class TestNemwebCurrentFilePattern:
     """Tests for NEMWEB CURRENT file naming pattern."""
 

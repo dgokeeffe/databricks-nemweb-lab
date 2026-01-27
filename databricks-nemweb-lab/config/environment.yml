@@ -16,4 +16,4 @@
 environment_version: "4"
 dependencies:
   # NEMWEB datasource wheel from UC Volume
-  - /Volumes/main/nemweb_lab/artifacts/nemweb_datasource-latest.whl
+  - /Volumes/main/nemweb_lab/artifacts/nemweb_datasource-2.10.4-py3-none-any.whl
