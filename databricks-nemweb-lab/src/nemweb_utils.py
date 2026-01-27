@@ -30,7 +30,7 @@ from pyspark.sql.types import DoubleType, TimestampType
 logger = logging.getLogger(__name__)
 
 # Version for debugging - increment when making changes
-__version__ = "2.10.20"
+__version__ = "2.10.21"
 
 
 def get_version() -> str:
