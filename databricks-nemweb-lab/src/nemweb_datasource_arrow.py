@@ -62,8 +62,6 @@ import logging
 
 from nemweb_utils import (
     _parse_timestamp_value,
-    _to_python_datetime,
-    _to_python_float,
 )
 
 logger = logging.getLogger(__name__)
@@ -548,13 +546,14 @@ class NemwebArrowReader(DataSourceReader):
             yield from self._read_http(partition)
 
     def _read_volume_file(self, partition: NemwebArrowPartition) -> Iterator:
-        """Read from local ZIP file in volume."""
+        """Read from local ZIP file in volume and yield PyArrow RecordBatch."""
         import zipfile
         import io
 
         table_config = SCHEMAS.get(partition.table, SCHEMAS["DISPATCHREGIONSUM"])
         record_type = table_config["record_type"]
         fields = table_config["fields"]
+        arrow_schema = self._build_arrow_schema(fields)
 
         try:
             with open(partition.file_path, 'rb') as f:
@@ -582,23 +581,17 @@ class NemwebArrowReader(DataSourceReader):
             if self.regions and rows:
                 rows = [r for r in rows if r.get("REGIONID") in self.regions]
 
-            # Yield tuples with pure Python types for Serverless Arrow compatibility
-            # Note: We yield tuples (not RecordBatch) to match Spark's expected format.
-            # The reference Arrow datasource (allisonwang-db/pyspark-data-sources) yields
-            # RecordBatches, but that's for Arrow IPC files. For CSV parsing, tuples work
-            # well and our coercion ensures pure Python types pass Arrow's strict checks.
-            # Filter out rows with unparseable timestamps
-            for row in rows:
-                result = self._row_to_tuple(row, fields)
-                if result is not None:
-                    yield result
+            # Yield PyArrow RecordBatch
+            if rows:
+                batch = self._rows_to_record_batch(rows, fields, arrow_schema)
+                yield batch
 
         except Exception as e:
             logger.error(f"Error reading {partition.file_path}: {e}")
             raise
 
     def _read_http(self, partition: NemwebArrowPartition) -> Iterator:
-        """Fetch data via HTTP and return as tuples."""
+        """Fetch data via HTTP and yield PyArrow RecordBatch."""
         import zipfile
         import io
         from urllib.request import urlopen, Request
@@ -607,6 +600,7 @@ class NemwebArrowReader(DataSourceReader):
         table_config = SCHEMAS.get(partition.table, SCHEMAS["DISPATCHREGIONSUM"])
         record_type = table_config["record_type"]
         fields = table_config["fields"]
+        arrow_schema = self._build_arrow_schema(fields)
 
         try:
             url = self._build_url(partition.table, partition.date)
@@ -640,16 +634,10 @@ class NemwebArrowReader(DataSourceReader):
             if partition.region:
                 rows = [r for r in rows if r.get("REGIONID") == partition.region]
 
-            # Yield tuples with pure Python types for Serverless Arrow compatibility
-            # Note: We yield tuples (not RecordBatch) to match Spark's expected format.
-            # The reference Arrow datasource (allisonwang-db/pyspark-data-sources) yields
-            # RecordBatches, but that's for Arrow IPC files. For CSV parsing, tuples work
-            # well and our coercion ensures pure Python types pass Arrow's strict checks.
-            # Filter out rows with unparseable timestamps
-            for row in rows:
-                result = self._row_to_tuple(row, fields)
-                if result is not None:
-                    yield result
+            # Yield PyArrow RecordBatch
+            if rows:
+                batch = self._rows_to_record_batch(rows, fields, arrow_schema)
+                yield batch
 
         except HTTPError as e:
             if e.code == 404:
@@ -710,30 +698,65 @@ class NemwebArrowReader(DataSourceReader):
 
         return rows
 
-    def _row_to_tuple(self, row: dict, fields: list) -> tuple:
-        """
-        Convert a row dict to a tuple with proper type conversion.
+    def _build_arrow_schema(self, fields: list) -> "pa.Schema":
+        """Build PyArrow schema from field definitions."""
+        import pyarrow as pa
 
-        Uses utilities from nemweb_utils for type coercion to ensure
-        Serverless Arrow fast path compatibility.
+        type_map = {
+            TimestampType: pa.timestamp('us'),
+            StringType: pa.string(),
+            DoubleType: pa.float64(),
+        }
 
-        Returns None if required timestamp field (SETTLEMENTDATE) cannot be parsed.
-        """
-        values = []
+        arrow_fields = []
         for name, spark_type in fields:
-            raw_val = row.get(name)
+            arrow_type = type_map.get(type(spark_type), pa.string())
+            arrow_fields.append(pa.field(name, arrow_type))
 
+        return pa.schema(arrow_fields)
+
+    def _rows_to_record_batch(self, rows: list, fields: list, arrow_schema: "pa.Schema") -> "pa.RecordBatch":
+        """Convert parsed rows to PyArrow RecordBatch."""
+        import pyarrow as pa
+
+        # Initialize column arrays
+        columns = {name: [] for name, _ in fields}
+
+        for row in rows:
+            for name, spark_type in fields:
+                raw_val = row.get(name)
+
+                if isinstance(spark_type, TimestampType):
+                    columns[name].append(self._parse_timestamp(raw_val))
+                elif isinstance(spark_type, DoubleType):
+                    columns[name].append(self._to_float(raw_val))
+                else:
+                    columns[name].append(raw_val if raw_val else None)
+
+        # Create Arrow arrays
+        arrays = []
+        for name, spark_type in fields:
             if isinstance(spark_type, TimestampType):
-                parsed_ts = _parse_timestamp_value(raw_val)
-                if parsed_ts is None and name == "SETTLEMENTDATE":
-                    return None
-                values.append(_to_python_datetime(parsed_ts))
+                arrays.append(pa.array(columns[name], type=pa.timestamp('us')))
             elif isinstance(spark_type, DoubleType):
-                values.append(_to_python_float(raw_val))
+                arrays.append(pa.array(columns[name], type=pa.float64()))
             else:
-                values.append(str(raw_val) if raw_val else None)
+                arrays.append(pa.array(columns[name], type=pa.string()))
 
-        return tuple(values)
+        return pa.RecordBatch.from_arrays(arrays, schema=arrow_schema)
+
+    def _parse_timestamp(self, ts_str) -> datetime:
+        """Parse timestamp string to datetime."""
+        return _parse_timestamp_value(ts_str)
+
+    def _to_float(self, val) -> float:
+        """Convert value to float."""
+        if val is None or val == "":
+            return None
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return None
 
 
 class NemwebArrowDataSource(DataSource):

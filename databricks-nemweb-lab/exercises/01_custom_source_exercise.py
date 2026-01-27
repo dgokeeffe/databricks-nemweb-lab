@@ -79,12 +79,10 @@ display(df)
 # MAGIC
 # MAGIC That's it! A custom data source is:
 # MAGIC - **DataSource class**: Declares the name, schema, and creates a reader
-# MAGIC - **DataSourceReader class**: Has a `read()` method that yields Row objects
+# MAGIC - **DataSourceReader class**: Has a `read()` method that yields PyArrow RecordBatch
 # MAGIC
-# MAGIC The Row objects you yield **must match** the schema field names.
-# MAGIC 
-# MAGIC **Note:** Row objects are the standard for custom datasources (recommended for Spark Connect/Serverless).
-# MAGIC Only Arrow datasources yield PyArrow RecordBatch objects directly.
+# MAGIC **Important:** For Serverless/Spark Connect compatibility, the `read()` method must yield **PyArrow RecordBatch** objects.
+# MAGIC The `parse_nemweb_to_arrow()` helper handles all the type conversion for you.
 
 # COMMAND ----------
 
@@ -224,9 +222,8 @@ check_schema()
 # MAGIC electricity market data.
 # MAGIC
 # MAGIC **Important:** Real AEMO DISPATCHREGIONSUM data contains ~130+ columns, but our schema
-# MAGIC only defines 12 key fields. The `parse_nemweb_csv()` function automatically filters
-# MAGIC to only the fields in your schema - extra columns are ignored, and missing columns
-# MAGIC are set to `None` (which is fine since all fields are nullable).
+# MAGIC only defines 12 key fields. The `parse_nemweb_to_arrow()` function automatically filters
+# MAGIC to only the fields in your schema and returns a PyArrow RecordBatch.
 
 # COMMAND ----------
 
@@ -239,7 +236,7 @@ notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext(
 repo_root = str(os.path.dirname(os.path.dirname(notebook_path)))
 sys.path.insert(0, f"/Workspace{repo_root}/src")
 
-from nemweb_utils import fetch_nemweb_current, parse_nemweb_csv, get_version
+from nemweb_utils import fetch_nemweb_current, parse_nemweb_to_arrow, get_version
 print(f"nemweb_utils version: {get_version()}")
 
 # Quick test - these helpers handle HTTP fetching and CSV parsing
@@ -331,7 +328,7 @@ class NemwebReader(DataSourceReader):
         """
         Read data for a single partition (runs on workers).
 
-        TODO 1.2b: Fetch and parse data for this partition's region.
+        TODO 1.2b: Fetch data and yield PyArrow RecordBatch.
 
         Steps:
         1. Call fetch_nemweb_current() with:
@@ -340,34 +337,24 @@ class NemwebReader(DataSourceReader):
            - max_files=6
            - use_sample=False  # Fetch real current files from AEMO
            - debug=True  # Print debug info to help diagnose issues
-           - target_date=self.start_date  # Filter files by date (handles timezone issues)
 
-        2. Call parse_nemweb_csv(data, self.schema) to convert to Row objects
-           (return_rows=True is the default - Row objects are always used unless using Arrow)
+        2. Call parse_nemweb_to_arrow(data, self.schema) to convert to RecordBatch
 
-        3. Yield each Row from the result
+        3. Yield the RecordBatch (required for Serverless/Spark Connect)
 
-        Note: Row objects are the standard for custom datasources (recommended for Spark Connect/Serverless).
-              Only Arrow datasources yield PyArrow RecordBatch objects directly.
-        The target_date parameter filters files by date extracted from filenames
-        (format: PUBLIC_DISPATCHIS_YYYYMMDDHHMM_*.zip). This ensures we get files
-        from the correct date even with timezone differences.
+        Note: parse_nemweb_to_arrow() handles type conversion and returns
+        a PyArrow RecordBatch which Spark can process efficiently.
 
         Example:
             data = fetch_nemweb_current(
                 table="DISPATCHREGIONSUM",
                 region=partition.region,
                 max_files=6,
-                use_sample=False,  # Fetch real current files from AEMO
-                debug=True,  # Print debug info (visible in worker logs)
-                target_date=self.start_date  # Filter to files from this date
+                use_sample=False,
+                debug=True
             )
-            # Log to help diagnose empty results (visible in Spark UI logs)
-            if not data:
-                import sys
-                print(f"[WORKER] WARNING: No data fetched for region {partition.region}, date {self.start_date}", file=sys.stderr)
-            for row in parse_nemweb_csv(data, self.schema):
-                yield row
+            if data:
+                yield parse_nemweb_to_arrow(data, self.schema)
         """
         # TODO: Implement this method
         pass
@@ -394,6 +381,7 @@ else:
 
 def check_partitions_and_read():
     """Validate Part 2 implementation."""
+    import pyarrow as pa
     issues = []
 
     # Check partitions
@@ -409,15 +397,15 @@ def check_partitions_and_read():
         if not hasattr(p, 'region'):
             issues.append("Partition missing 'region' attribute")
 
-    # Check read method
+    # Check read method - should yield RecordBatch
     if not issues:
         test_partition = NemwebPartition("NSW1", "2024-01-01", "2024-01-01")
         try:
             result = list(reader.read(test_partition))
             if not result:
                 issues.append("read() returned empty - check fetch_nemweb_current() call")
-            elif len(result[0]) != len(schema.fields):
-                issues.append(f"read() tuple has {len(result[0])} fields, expected {len(schema.fields)}")
+            elif not isinstance(result[0], pa.RecordBatch):
+                issues.append(f"read() should yield RecordBatch, got {type(result[0]).__name__}")
         except Exception as e:
             issues.append(f"read() error: {e}")
 
@@ -476,15 +464,12 @@ class NemwebDataSource(DataSource):
 # MAGIC %md
 # MAGIC ## Part 4: Register and Test
 # MAGIC
-# MAGIC **Note:** The tuple-based datasource implementation above works for learning,
-# MAGIC but Spark Connect (Serverless) has strict datetime serialization requirements
-# MAGIC that can cause `AssertionError` issues. For production use, see the Arrow-based
-# MAGIC datasource below which uses PyArrow RecordBatches to avoid serialization issues.
+# MAGIC Now let's test your implementation! The RecordBatch approach works seamlessly
+# MAGIC with Spark Connect (Serverless) because PyArrow handles all the serialization.
 
 # COMMAND ----------
 
-# Option 1: Test your tuple-based datasource (may have Spark Connect issues)
-# Uncomment to test your implementation:
+# Test your implementation (uncomment after completing the TODOs):
 # spark.dataSource.register(NemwebDataSource)
 # df = (spark.read
 #       .format("nemweb")
@@ -493,8 +478,7 @@ class NemwebDataSource(DataSource):
 # print(f"Row count: {df.count()}")
 # display(df.limit(5))
 
-# Option 2: Use the production Arrow datasource (works perfectly with Spark Connect)
-# This uses PyArrow RecordBatches which bypasses Python datetime serialization
+# Or use the production Arrow datasource which has additional features:
 from nemweb_datasource_arrow import NemwebArrowDataSource
 from datetime import datetime, timedelta
 
@@ -525,6 +509,7 @@ display(df.limit(5))
 
 def validate_implementation():
     """Validate the complete custom data source implementation."""
+    import pyarrow as pa
     print("=" * 60)
     print("FINAL VALIDATION")
     print("=" * 60)
@@ -532,7 +517,7 @@ def validate_implementation():
     checks = {
         "Part 1 - Schema (12 fields)": False,
         "Part 2 - Partitions": False,
-        "Part 2 - Read": False,
+        "Part 2 - Read (RecordBatch)": False,
         "Part 3 - DataSource.name()": False,
         "Part 3 - DataSource.schema()": False,
         "Part 3 - DataSource.reader()": False,
@@ -552,14 +537,16 @@ def validate_implementation():
     partitions = reader.partitions()
     checks["Part 2 - Partitions"] = partitions is not None and len(partitions) == 3
 
-    # Part 2: Read
+    # Part 2: Read (should yield RecordBatch)
     if partitions:
         try:
             test_partition = NemwebPartition("NSW1", "2024-01-01", "2024-01-01")
             result = list(reader.read(test_partition))
-            checks["Part 2 - Read"] = len(result) > 0
-        except:
-            pass
+            checks["Part 2 - Read (RecordBatch)"] = (
+                len(result) > 0 and isinstance(result[0], pa.RecordBatch)
+            )
+        except Exception as e:
+            print(f"Read check error: {e}")
 
     # Part 3: DataSource
     try:
@@ -590,7 +577,7 @@ def validate_implementation():
     if all_passed:
         print("=" * 60)
         print("🎉 CONGRATULATIONS! All checks passed!")
-        print("   Your custom data source fetches REAL data from NEMWEB.")
+        print("   Your custom data source fetches REAL data from NEMWEB!")
         print("=" * 60)
     else:
         failed = [k for k, v in checks.items() if not v]
@@ -613,21 +600,17 @@ validate_implementation()
 # MAGIC | `DataSource.schema()` | Define output columns and types |
 # MAGIC | `DataSource.reader()` | Create reader with options |
 # MAGIC | `DataSourceReader.partitions()` | Plan parallel work units |
-# MAGIC | `DataSourceReader.read()` | Fetch and yield data (runs on workers) |
+# MAGIC | `DataSourceReader.read()` | Fetch data and yield PyArrow RecordBatch |
+# MAGIC
+# MAGIC **Key Requirement:** Serverless/Spark Connect requires `read()` to yield **PyArrow RecordBatch** objects.
+# MAGIC The `parse_nemweb_to_arrow()` helper handles all the type conversion for you.
 # MAGIC
 # MAGIC ## Production Implementation
 # MAGIC
-# MAGIC For production use, see `src/nemweb_datasource_arrow.py` which uses:
-# MAGIC - **PyArrow RecordBatch** for zero-copy transfer (Serverless compatible)
-# MAGIC - **Avoids datetime serialization issues** by using Arrow's native types
+# MAGIC For production use, see `src/nemweb_datasource_arrow.py` which adds:
 # MAGIC - **Volume mode** with parallel downloads to UC Volume
 # MAGIC - **Multiple tables** (DISPATCHREGIONSUM, DISPATCHPRICE, TRADINGPRICE)
 # MAGIC - **Retry logic** with exponential backoff
-# MAGIC
-# MAGIC **Note:** The tuple-based approach above works for learning, but Spark Connect
-# MAGIC (Serverless) has strict datetime serialization requirements. The Arrow datasource
-# MAGIC bypasses Python serialization entirely by using PyArrow RecordBatches, which is
-# MAGIC why it works perfectly in production.
 # MAGIC
 # MAGIC ## Next Steps
 # MAGIC

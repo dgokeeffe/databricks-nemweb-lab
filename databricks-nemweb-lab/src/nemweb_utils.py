@@ -30,7 +30,7 @@ from pyspark.sql.types import DoubleType, TimestampType
 logger = logging.getLogger(__name__)
 
 # Version for debugging - increment when making changes
-__version__ = "2.10.18"
+__version__ = "2.10.20"
 
 
 def get_version() -> str:
@@ -620,16 +620,55 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator["Row"]:
             yield Row(**values)
 
 
+def parse_nemweb_to_tuples(data: list[dict], schema: "StructType") -> Iterator[tuple]:
+    """
+    Parse NEMWEB data to tuples with proper type coercion for Serverless.
+
+    The PySpark Data Source API read() method must yield tuples. This function
+    converts parsed NEMWEB data to tuples with pure Python types to ensure
+    Serverless Arrow fast path compatibility.
+
+    Args:
+        data: List of dictionaries from fetch_nemweb_current()
+        schema: Spark StructType defining the output columns
+
+    Yields:
+        Tuples with values matching schema field order
+    """
+    field_names = [field.name for field in schema.fields]
+    field_types = {field.name: field.dataType for field in schema.fields}
+
+    for row in data:
+        values = []
+        skip_row = False
+
+        for name in field_names:
+            raw = row.get(name)
+
+            if raw is None or raw == "":
+                values.append(None)
+            elif isinstance(field_types[name], TimestampType):
+                parsed = _parse_timestamp_value(raw)
+                if parsed is None and name == "SETTLEMENTDATE":
+                    skip_row = True
+                    break
+                values.append(_to_python_datetime(parsed))
+            elif isinstance(field_types[name], DoubleType):
+                values.append(_to_python_float(raw))
+            else:
+                values.append(str(raw) if raw else None)
+
+        if not skip_row:
+            yield tuple(values)
+
+
 def parse_nemweb_to_arrow(data: list[dict], schema: "StructType") -> "pa.RecordBatch":
     """
-    Parse NEMWEB data to a PyArrow RecordBatch for Serverless compatibility.
+    Parse NEMWEB data to PyArrow RecordBatch.
 
-    The PySpark Data Source API requires PyArrow RecordBatches when running on
-    Serverless/Spark Connect. This function converts parsed NEMWEB data directly
-    to Arrow format, bypassing Row objects which can cause serialization issues.
-
-    All values are coerced to pure Python types before creating Arrow arrays
-    to ensure Serverless Arrow fast path compatibility.
+    The PySpark Data Source API read() method can yield PyArrow RecordBatch
+    for efficient batch processing. This function converts parsed NEMWEB data
+    to a RecordBatch matching the provided schema.
 
     Args:
         data: List of dictionaries from fetch_nemweb_current()
@@ -639,64 +678,52 @@ def parse_nemweb_to_arrow(data: list[dict], schema: "StructType") -> "pa.RecordB
         PyArrow RecordBatch with data matching the schema
     """
     import pyarrow as pa
-    from pyspark.sql.types import StringType
 
     field_names = [field.name for field in schema.fields]
     field_types = {field.name: field.dataType for field in schema.fields}
+
+    # Build Arrow schema
+    type_map = {
+        TimestampType: pa.timestamp('us'),
+        DoubleType: pa.float64(),
+    }
+
+    arrow_fields = []
+    for field in schema.fields:
+        arrow_type = type_map.get(type(field.dataType), pa.string())
+        arrow_fields.append(pa.field(field.name, arrow_type))
+    arrow_schema = pa.schema(arrow_fields)
 
     # Initialize column arrays
     columns = {name: [] for name in field_names}
 
     for row in data:
-        skip_row = False
-
-        # First pass - check if we need to skip this row
-        for name in field_names:
-            if isinstance(field_types[name], TimestampType) and name == "SETTLEMENTDATE":
-                raw = row.get(name)
-                if raw is None or raw == "":
-                    skip_row = True
-                    break
-                parsed = _parse_timestamp_value(raw)
-                if parsed is None:
-                    skip_row = True
-                    break
-
-        if skip_row:
-            continue
-
-        # Second pass - populate columns
         for name in field_names:
             raw = row.get(name)
 
             if raw is None or raw == "":
                 columns[name].append(None)
             elif isinstance(field_types[name], TimestampType):
-                parsed = _parse_timestamp_value(raw)
-                columns[name].append(_to_python_datetime(parsed))
+                columns[name].append(_parse_timestamp_value(raw))
             elif isinstance(field_types[name], DoubleType):
-                columns[name].append(_to_python_float(raw))
+                try:
+                    columns[name].append(float(raw))
+                except (ValueError, TypeError):
+                    columns[name].append(None)
             else:
                 columns[name].append(str(raw) if raw else None)
 
-    # Build Arrow schema and arrays
-    arrow_fields = []
+    # Create Arrow arrays
     arrays = []
-
-    for name in field_names:
-        spark_type = field_types[name]
-
-        if isinstance(spark_type, TimestampType):
-            arrow_fields.append(pa.field(name, pa.timestamp('us')))
+    for field in schema.fields:
+        name = field.name
+        if isinstance(field.dataType, TimestampType):
             arrays.append(pa.array(columns[name], type=pa.timestamp('us')))
-        elif isinstance(spark_type, DoubleType):
-            arrow_fields.append(pa.field(name, pa.float64()))
+        elif isinstance(field.dataType, DoubleType):
             arrays.append(pa.array(columns[name], type=pa.float64()))
         else:
-            arrow_fields.append(pa.field(name, pa.string()))
             arrays.append(pa.array(columns[name], type=pa.string()))
 
-    arrow_schema = pa.schema(arrow_fields)
     return pa.RecordBatch.from_arrays(arrays, schema=arrow_schema)
 
 

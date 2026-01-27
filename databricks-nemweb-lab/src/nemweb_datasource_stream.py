@@ -41,7 +41,7 @@ from pyspark.sql.datasource import (
     InputPartition,
 )
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType, TimestampType
-from typing import Iterator, Tuple, Optional
+from typing import Iterator, Optional
 from datetime import datetime, timedelta
 import logging
 import re
@@ -234,16 +234,14 @@ class NemwebStreamReader(DataSourceStreamReader):
             regions=self.regions
         )]
 
-    def read(self, partition: NemwebStreamPartition) -> Iterator[Tuple]:
+    def read(self, partition: NemwebStreamPartition) -> Iterator:
         """
         Read data from the files in this partition.
 
-        Downloads each ZIP file, extracts CSV data, and yields rows.
+        Downloads each ZIP file, extracts CSV data, and yields PyArrow RecordBatch.
         """
         import zipfile
         import io
-        from urllib.request import urlopen, Request
-        from urllib.error import HTTPError, URLError
         import time
 
         table_config = SCHEMAS.get(partition.table, SCHEMAS["DISPATCHREGIONSUM"])
@@ -271,9 +269,9 @@ class NemwebStreamReader(DataSourceStreamReader):
                 if partition.regions:
                     rows = [r for r in rows if r.get("REGIONID") in partition.regions]
 
-                # Convert to Row objects and yield (Row objects recommended for Spark Connect)
+                # Yield tuples with pure Python types for Serverless compatibility
                 for row in rows:
-                    result = self._row_to_row_object(row, fields)
+                    result = self._row_to_tuple(row, fields)
                     if result is not None:
                         yield result
 
@@ -383,18 +381,16 @@ class NemwebStreamReader(DataSourceStreamReader):
 
         return rows
 
-    def _row_to_row_object(self, row: dict, fields: list):
+    def _row_to_tuple(self, row: dict, fields: list) -> tuple:
         """
-        Convert a row dict to a Row object with proper type conversion.
+        Convert a row dict to a tuple with proper type conversion.
 
         Uses utilities from nemweb_utils for type coercion to ensure
         Serverless Arrow fast path compatibility.
 
         Returns None if required timestamp field cannot be parsed.
         """
-        from pyspark.sql import Row
-
-        values = {}
+        values = []
         for name, spark_type in fields:
             raw_val = row.get(name)
 
@@ -402,13 +398,13 @@ class NemwebStreamReader(DataSourceStreamReader):
                 parsed_ts = _parse_timestamp_value(raw_val)
                 if parsed_ts is None and name == "SETTLEMENTDATE":
                     return None
-                values[name] = _to_python_datetime(parsed_ts)
+                values.append(_to_python_datetime(parsed_ts))
             elif isinstance(spark_type, DoubleType):
-                values[name] = _to_python_float(raw_val)
+                values.append(_to_python_float(raw_val))
             else:
-                values[name] = str(raw_val) if raw_val else None
+                values.append(str(raw_val) if raw_val else None)
 
-        return Row(**values)
+        return tuple(values)
 
 
 class NemwebStreamDataSource(DataSource):
