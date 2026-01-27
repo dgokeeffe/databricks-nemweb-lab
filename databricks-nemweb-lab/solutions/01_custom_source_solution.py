@@ -1,202 +1,251 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Solution: Exercise 1 - Understanding the NEMWEB Arrow Data Source
+# MAGIC # Solution: Exercise 1 - Building a Custom PySpark Data Source
 # MAGIC
 # MAGIC This notebook contains the complete solutions for Exercise 1.
 
 # COMMAND ----------
 
-from databricks.sdk.runtime import spark, display, dbutils
-from pyspark.sql.functions import col, count, avg, max, min
+# MAGIC %md
+# MAGIC ## Warm-up: Hello World Data Source
 
-# Import the production data source
-from nemweb_datasource_arrow import (
-    NemwebArrowDataSource,
-    NemwebArrowReader,
-    SCHEMAS,
-    TABLE_TO_FOLDER,
+# COMMAND ----------
+
+from pyspark.sql.datasource import DataSource, DataSourceReader
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType
+
+from databricks.sdk.runtime import spark, display
+
+class HelloWorldDataSource(DataSource):
+    """Minimal data source that generates greeting messages."""
+
+    @classmethod
+    def name(cls) -> str:
+        return "hello"
+
+    def schema(self) -> StructType:
+        return StructType([
+            StructField("id", IntegerType()),
+            StructField("message", StringType()),
+        ])
+
+    def reader(self, schema: StructType) -> DataSourceReader:
+        return HelloWorldReader(self.options)
+
+
+class HelloWorldReader(DataSourceReader):
+    def __init__(self, options: dict):
+        self.count = int(options.get("count", 5))
+
+    def read(self, partition):
+        for i in range(self.count):
+            yield (i, f"Hello, World #{i}!")
+
+spark.dataSource.register(HelloWorldDataSource)
+df = spark.read.format("hello").option("count", 3).load()
+display(df)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ---
+# MAGIC ## Solution 1.1: Complete Schema Definition
+
+# COMMAND ----------
+
+from pyspark.sql.datasource import DataSource, DataSourceReader, InputPartition
+from pyspark.sql.types import (
+    StructType, StructField, StringType, DoubleType, TimestampType
 )
+from typing import Iterator, Tuple
+from datetime import datetime, timedelta
 
-# Register the data source
-spark.dataSource.register(NemwebArrowDataSource)
+def get_dispatchregionsum_schema() -> StructType:
+    """
+    Return the schema for DISPATCHREGIONSUM table.
 
-print("Data source registered: nemweb_arrow")
-print(f"\nSupported tables: {list(SCHEMAS.keys())}")
+    Reference: MMS Electricity Data Model Report - DISPATCH package
+    """
+    return StructType([
+        # Time and identification fields
+        StructField("SETTLEMENTDATE", TimestampType(), True),
+        StructField("RUNNO", StringType(), True),
+        StructField("REGIONID", StringType(), True),
+        StructField("DISPATCHINTERVAL", StringType(), True),
+        StructField("INTERVENTION", StringType(), True),
 
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Solution 1.1: Explore DISPATCHPRICE Schema
-
-# COMMAND ----------
-
-# SOLUTION 1.1: Print the DISPATCHPRICE schema fields
-print("DISPATCHPRICE Schema:")
-print("-" * 50)
-for field_name, field_type in SCHEMAS["DISPATCHPRICE"]["fields"]:
-    print(f"  {field_name}: {type(field_type).__name__}")
-
-print(f"\nRecord type filter: {SCHEMAS['DISPATCHPRICE']['record_type']}")
-
-# COMMAND ----------
-
-# Understanding TABLE_TO_FOLDER Mapping
-print("Table to Folder Mapping:")
-print("-" * 50)
-for table, (folder, prefix) in TABLE_TO_FOLDER.items():
-    print(f"  {table}:")
-    print(f"    Folder: {folder}")
-    print(f"    File prefix: PUBLIC_{prefix}_YYYYMMDD.zip")
-    print()
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Solution 1.2: Fetch DISPATCHPRICE Data
-
-# COMMAND ----------
-
-# SOLUTION 1.2: Read DISPATCHPRICE for VIC1 region
-df_price = (spark.read
-    .format("nemweb_arrow")
-    .option("table", "DISPATCHPRICE")
-    .option("regions", "VIC1")
-    .option("start_date", "2024-07-01")
-    .option("end_date", "2024-07-01")
-    .load())
-
-print(f"Price data rows: {df_price.count()}")
-display(df_price.limit(5))
-
-# COMMAND ----------
-
-# Analyze price data
-print("Victoria Price Statistics:")
-price_stats = df_price.select(
-    avg("RRP").alias("avg_price_mwh"),
-    max("RRP").alias("max_price_mwh"),
-    min("RRP").alias("min_price_mwh"),
-)
-display(price_stats)
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Volume Mode with Auto-Download
-
-# COMMAND ----------
-
-# Configuration
-CATALOG = dbutils.widgets.get("catalog") if "catalog" in [w.name for w in dbutils.widgets.getAll()] else "workspace"
-SCHEMA = "nemweb_lab"
-VOLUME_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/raw_files"
-
-print(f"Volume path: {VOLUME_PATH}")
-
-# COMMAND ----------
-
-# Auto-download mode: Downloads to volume first, then reads
-df_volume = (spark.read
-    .format("nemweb_arrow")
-    .option("volume_path", VOLUME_PATH)
-    .option("table", "DISPATCHREGIONSUM")
-    .option("start_date", "2024-07-01")
-    .option("end_date", "2024-07-03")
-    .option("auto_download", "true")
-    .option("max_workers", "8")
-    .load())
-
-print(f"Volume mode: Retrieved {df_volume.count()} rows")
-
-# COMMAND ----------
-
-# Analyze demand by region
-demand_summary = (df_volume
-    .groupBy("REGIONID")
-    .agg(
-        count("*").alias("intervals"),
-        avg("TOTALDEMAND").alias("avg_demand_mw"),
-        max("TOTALDEMAND").alias("max_demand_mw"),
-        min("TOTALDEMAND").alias("min_demand_mw")
-    )
-    .orderBy("REGIONID"))
-
-display(demand_summary)
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Solution 1.3: Define DISPATCH_UNIT_SCADA Schema
-
-# COMMAND ----------
-
-from pyspark.sql.types import TimestampType, StringType, DoubleType
-
-# SOLUTION 1.3: Complete DISPATCH_UNIT_SCADA schema
-DISPATCH_UNIT_SCADA_CONFIG = {
-    "record_type": "DISPATCH,UNIT_SCADA",
-    "fields": [
-        ("SETTLEMENTDATE", TimestampType()),
-        ("DUID", StringType()),
-        ("SCADAVALUE", DoubleType()),
-    ],
-}
+        # SOLUTION 1.1: Added measurement fields
+        StructField("TOTALDEMAND", DoubleType(), True),
+        StructField("AVAILABLEGENERATION", DoubleType(), True),
+        StructField("AVAILABLELOAD", DoubleType(), True),
+        StructField("DEMANDFORECAST", DoubleType(), True),
+        StructField("DISPATCHABLEGENERATION", DoubleType(), True),
+        StructField("DISPATCHABLELOAD", DoubleType(), True),
+        StructField("NETINTERCHANGE", DoubleType(), True),
+    ])
 
 # Verify schema
-print("DISPATCH_UNIT_SCADA Schema:")
-print("-" * 50)
-for field_name, field_type in DISPATCH_UNIT_SCADA_CONFIG["fields"]:
-    print(f"  {field_name}: {type(field_type).__name__}")
+schema = get_dispatchregionsum_schema()
+print(f"Schema has {len(schema.fields)} fields (expected: 12)")
+for field in schema.fields:
+    print(f"  - {field.name}: {field.dataType}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Solution 1.4: Add Table Mapping
+# MAGIC ## Solution 1.2: Partition Planning and Data Reading
 
 # COMMAND ----------
 
-# SOLUTION 1.4: Define the folder mapping for DISPATCH_UNIT_SCADA
-DISPATCH_UNIT_SCADA_FOLDER = ("Dispatch_SCADA", "DISPATCHSCADA")
+# Import helper functions
+import sys
+import os
 
-print(f"Folder mapping: {DISPATCH_UNIT_SCADA_FOLDER}")
-print(f"  Folder: {DISPATCH_UNIT_SCADA_FOLDER[0]}")
-print(f"  File prefix: PUBLIC_{DISPATCH_UNIT_SCADA_FOLDER[1]}_YYYYMMDD.zip")
+notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
+repo_root = str(os.path.dirname(os.path.dirname(notebook_path)))
+sys.path.insert(0, f"/Workspace{repo_root}/src")
+
+from nemweb_utils import fetch_nemweb_current, parse_nemweb_csv
+
+# Quick test
+test_data = fetch_nemweb_current(
+    table="DISPATCHREGIONSUM",
+    region="NSW1",
+    max_files=2,
+    use_sample=True
+)
+print(f"Helper function works! Got {len(test_data)} rows")
+
+# COMMAND ----------
+
+class NemwebPartition(InputPartition):
+    """
+    Represents one partition of NEMWEB data.
+    Each partition handles one region's data.
+    """
+    def __init__(self, region: str, start_date: str, end_date: str):
+        self.region = region
+        self.start_date = start_date
+        self.end_date = end_date
+
+
+class NemwebReader(DataSourceReader):
+    """
+    Reader for NEMWEB data source.
+
+    The reader has two jobs:
+    1. partitions() - Plan the work (called on driver)
+    2. read() - Do the work (called on workers)
+    """
+
+    def __init__(self, schema: StructType, options: dict):
+        self.schema = schema
+        self.options = options
+        self.regions = options.get("regions", "NSW1,QLD1,SA1,VIC1,TAS1").split(",")
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        self.start_date = options.get("start_date", yesterday)
+        self.end_date = options.get("end_date", yesterday)
+
+    def partitions(self) -> list[InputPartition]:
+        """
+        Plan partitions for parallel reading.
+
+        SOLUTION 1.2a: Create one partition per region
+        """
+        partitions = []
+
+        for region in self.regions:
+            partition = NemwebPartition(
+                region=region.strip(),
+                start_date=self.start_date,
+                end_date=self.end_date
+            )
+            partitions.append(partition)
+
+        return partitions
+
+    def read(self, partition: NemwebPartition) -> Iterator[Tuple]:
+        """
+        Read data for a single partition (runs on workers).
+
+        SOLUTION 1.2b: Fetch and parse NEMWEB data
+        """
+        # Fetch recent data from CURRENT folder
+        data = fetch_nemweb_current(
+            table="DISPATCHREGIONSUM",
+            region=partition.region,
+            max_files=6
+        )
+
+        # Convert to tuples matching schema
+        for row_tuple in parse_nemweb_csv(data, self.schema):
+            yield row_tuple
+
+
+# Test partition planning
+test_options = {"regions": "NSW1,VIC1,QLD1"}
+reader = NemwebReader(schema, test_options)
+partitions = reader.partitions()
+
+print(f"Created {len(partitions)} partitions (expected: 3)")
+for p in partitions:
+    print(f"  - Region: {p.region}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Bonus: Add DISPATCH_UNIT_SCADA to Production Code
-# MAGIC
-# MAGIC To actually add this table to the data source, you would add these
-# MAGIC to `nemweb_datasource_arrow.py`:
+# MAGIC ## Solution 1.3: Complete DataSource Class
 
 # COMMAND ----------
 
-# This shows what you would add to the production code:
-print("""
-# Add to SCHEMAS dictionary in nemweb_datasource_arrow.py:
+class NemwebDataSource(DataSource):
+    """
+    Custom PySpark Data Source for AEMO NEMWEB electricity market data.
 
-SCHEMAS = {
-    ...existing schemas...
+    Usage:
+        spark.dataSource.register(NemwebDataSource)
+        df = spark.read.format("nemweb").option("regions", "NSW1,VIC1").load()
 
-    "DISPATCH_UNIT_SCADA": {
-        "record_type": "DISPATCH,UNIT_SCADA",
-        "fields": [
-            ("SETTLEMENTDATE", TimestampType()),
-            ("DUID", StringType()),
-            ("SCADAVALUE", DoubleType()),
-        ],
-    },
-}
+    Options:
+        - regions: Comma-separated list of NEM regions (default: all 5)
+        - start_date: Start date in YYYY-MM-DD format
+        - end_date: End date in YYYY-MM-DD format
+    """
 
-# Add to TABLE_TO_FOLDER dictionary:
+    @classmethod
+    def name(cls) -> str:
+        """Return the format name used in spark.read.format("...")."""
+        # SOLUTION 1.3a: Return format name
+        return "nemweb"
 
-TABLE_TO_FOLDER = {
-    ...existing mappings...
+    def schema(self) -> StructType:
+        """Return the schema for this data source."""
+        # SOLUTION 1.3b: Return schema
+        return get_dispatchregionsum_schema()
 
-    "DISPATCH_UNIT_SCADA": ("Dispatch_SCADA", "DISPATCHSCADA"),
-}
-""")
+    def reader(self, schema: StructType) -> DataSourceReader:
+        """Create a reader for this data source."""
+        # SOLUTION 1.3c: Create reader with schema and options
+        return NemwebReader(schema, self.options)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Register and Test
+
+# COMMAND ----------
+
+# Register the data source with Spark
+spark.dataSource.register(NemwebDataSource)
+
+# Read data using your custom data source!
+df = (spark.read
+      .format("nemweb")
+      .option("regions", "NSW1")
+      .load())
+
+print(f"Row count: {df.count()}")
+display(df.limit(5))
 
 # COMMAND ----------
 
@@ -205,74 +254,97 @@ TABLE_TO_FOLDER = {
 
 # COMMAND ----------
 
-def validate_exercise():
-    """Validate Exercise 1 completion."""
+def validate_implementation():
+    """Validate the custom data source implementation."""
     print("=" * 60)
-    print("EXERCISE 1 VALIDATION")
+    print("FINAL VALIDATION")
     print("=" * 60)
 
     checks = {
-        "1.1 - Explored DISPATCHPRICE schema": True,  # We did it above
-        "1.2 - Fetched price data": False,
-        "1.3 - Defined DISPATCH_UNIT_SCADA schema": False,
-        "1.4 - Defined folder mapping": False,
+        "Part 1 - Schema (12 fields)": False,
+        "Part 2 - Partitions": False,
+        "Part 2 - Read": False,
+        "Part 3 - DataSource.name()": False,
+        "Part 3 - DataSource.schema()": False,
+        "Part 3 - DataSource.reader()": False,
     }
 
-    # Check 1.2: Price data fetched
+    # Part 1: Schema
+    schema = get_dispatchregionsum_schema()
+    required = ["TOTALDEMAND", "AVAILABLEGENERATION", "NETINTERCHANGE"]
+    schema_ok = (
+        len(schema.fields) >= 12 and
+        all(f in [field.name for field in schema.fields] for f in required)
+    )
+    checks["Part 1 - Schema (12 fields)"] = schema_ok
+
+    # Part 2: Partitions
+    reader = NemwebReader(schema, {"regions": "NSW1,VIC1,QLD1"})
+    partitions = reader.partitions()
+    checks["Part 2 - Partitions"] = partitions is not None and len(partitions) == 3
+
+    # Part 2: Read
+    if partitions:
+        try:
+            test_partition = NemwebPartition("NSW1", "2024-01-01", "2024-01-01")
+            result = list(reader.read(test_partition))
+            checks["Part 2 - Read"] = len(result) > 0
+        except:
+            pass
+
+    # Part 3: DataSource
     try:
-        if df_price.count() > 0:
-            checks["1.2 - Fetched price data"] = True
+        checks["Part 3 - DataSource.name()"] = NemwebDataSource.name() == "nemweb"
     except:
         pass
 
-    # Check 1.3: DISPATCH_UNIT_SCADA schema
-    if (DISPATCH_UNIT_SCADA_CONFIG.get("fields") and
-        len(DISPATCH_UNIT_SCADA_CONFIG["fields"]) >= 3):
-        field_names = [f[0] for f in DISPATCH_UNIT_SCADA_CONFIG["fields"]]
-        if "SETTLEMENTDATE" in field_names and "DUID" in field_names:
-            checks["1.3 - Defined DISPATCH_UNIT_SCADA schema"] = True
+    try:
+        ds = NemwebDataSource(options={})
+        checks["Part 3 - DataSource.schema()"] = len(ds.schema().fields) >= 12
+    except:
+        pass
 
-    # Check 1.4: Folder mapping
-    if DISPATCH_UNIT_SCADA_FOLDER and len(DISPATCH_UNIT_SCADA_FOLDER) == 2:
-        if "Dispatch_SCADA" in DISPATCH_UNIT_SCADA_FOLDER[0]:
-            checks["1.4 - Defined folder mapping"] = True
+    try:
+        ds = NemwebDataSource(options={})
+        checks["Part 3 - DataSource.reader()"] = ds.reader(schema) is not None
+    except:
+        pass
 
     # Print results
     print()
     for check, passed in checks.items():
-        status = "PASS" if passed else "FAIL"
-        print(f"  [{status}] {check}")
+        status = "✅" if passed else "❌"
+        print(f"  {status} {check}")
 
     all_passed = all(checks.values())
     print()
     if all_passed:
         print("=" * 60)
-        print("All checks passed!")
+        print("🎉 All checks passed!")
         print("=" * 60)
 
     return all_passed
 
-validate_exercise()
+validate_implementation()
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## Summary
 # MAGIC
-# MAGIC You've learned how the production NEMWEB data source works:
-# MAGIC
 # MAGIC | Component | Purpose |
 # MAGIC |-----------|---------|
-# MAGIC | `SCHEMAS` | Schema definitions for each MMS table |
-# MAGIC | `TABLE_TO_FOLDER` | Maps tables to NEMWEB folder/file structure |
-# MAGIC | `NemwebArrowReader` | Handles partitioning and data fetching |
-# MAGIC | `NemwebArrowDataSource` | Main entry point registered with Spark |
+# MAGIC | `DataSource.name()` | Format string for `spark.read.format(...)` |
+# MAGIC | `DataSource.schema()` | Define output columns and types |
+# MAGIC | `DataSource.reader()` | Create reader with options |
+# MAGIC | `DataSourceReader.partitions()` | Plan parallel work units |
+# MAGIC | `DataSourceReader.read()` | Fetch and yield data (runs on workers) |
 # MAGIC
-# MAGIC ### Key Options
-# MAGIC | Option | Description |
-# MAGIC |--------|-------------|
-# MAGIC | `volume_path` | UC Volume for file storage |
-# MAGIC | `table` | MMS table name (DISPATCHREGIONSUM, DISPATCHPRICE, etc.) |
-# MAGIC | `auto_download` | Download files to volume before reading |
-# MAGIC | `regions` | Filter by NEM region(s) |
-# MAGIC | `start_date` / `end_date` | Date range to fetch |
+# MAGIC ## Compare to Production
+# MAGIC
+# MAGIC Your implementation is a simplified version. The production code in
+# MAGIC `src/nemweb_datasource_arrow.py` adds:
+# MAGIC - **PyArrow RecordBatch** for zero-copy transfer (Serverless compatible)
+# MAGIC - **Volume mode** with parallel downloads to UC Volume
+# MAGIC - **Multiple tables** (DISPATCHREGIONSUM, DISPATCHPRICE, TRADINGPRICE)
+# MAGIC - **Retry logic** with exponential backoff
