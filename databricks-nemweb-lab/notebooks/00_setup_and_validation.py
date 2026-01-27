@@ -269,28 +269,46 @@ if wheels:
     latest_wheel = sorted(wheels)[-1]
     wheel_filename = os.path.basename(latest_wheel)
 
-    # Copy wheel to artifacts volume (versioned name only - pip requires valid wheel names)
-    dest_wheel = f"{ARTIFACTS_VOLUME}/{wheel_filename}"
+    # --- Deploy to UC Volume ---
+    dest_wheel_volume = f"{ARTIFACTS_VOLUME}/{wheel_filename}"
+    shutil.copy2(latest_wheel, dest_wheel_volume)
+    print(f"Deployed wheel to Volume: {dest_wheel_volume}")
 
-    shutil.copy2(latest_wheel, dest_wheel)
-
-    print(f"Deployed wheel to: {dest_wheel}")
+    # --- Deploy to Workspace ---
+    workspace_artifacts = f"{workspace_root}/artifacts"
+    os.makedirs(workspace_artifacts, exist_ok=True)
+    dest_wheel_workspace = f"{workspace_artifacts}/{wheel_filename}"
+    shutil.copy2(latest_wheel, dest_wheel_workspace)
+    print(f"Deployed wheel to Workspace: {dest_wheel_workspace}")
 
     # Create environment.yml for base environment
     # Format matches Databricks docs: https://docs.databricks.com/aws/en/admin/workspace-settings/base-environment
     # NOTE: Must use properly versioned wheel name - pip rejects invalid names like "latest.whl"
-    env_content = f"""environment_version: '4'
+
+    # Volume-based environment.yml
+    env_content_volume = f"""environment_version: '4'
 dependencies:
-  - {dest_wheel}
+  - {dest_wheel_volume}
 """
+    env_path_volume = f"{ARTIFACTS_VOLUME}/environment.yml"
+    with open(env_path_volume, 'w') as f:
+        f.write(env_content_volume)
+    print(f"Environment spec (Volume): {env_path_volume}")
 
-    env_path = f"{ARTIFACTS_VOLUME}/environment.yml"
-    with open(env_path, 'w') as f:
-        f.write(env_content)
+    # Workspace-based environment.yml
+    env_content_workspace = f"""environment_version: '4'
+dependencies:
+  - {dest_wheel_workspace}
+"""
+    env_path_workspace = f"{workspace_artifacts}/environment.yml"
+    with open(env_path_workspace, 'w') as f:
+        f.write(env_content_workspace)
+    print(f"Environment spec (Workspace): {env_path_workspace}")
 
-    print(f"Environment spec:  {env_path}")
     print()
-    print("Base environment ready for workspace configuration.")
+    print("Base environment files ready. Choose either:")
+    print(f"  - Volume:    {env_path_volume}")
+    print(f"  - Workspace: {env_path_workspace}")
 else:
     print("Warning: No wheel found - base environment not configured")
 
@@ -514,12 +532,17 @@ Data Tables:
     - Source: OpenNEM (github.com/opennem/opennem)
 
 Base Environment (for workspace-wide use):
-  Wheel:    {ARTIFACTS_VOLUME}/nemweb_datasource-*.whl
-  Spec:     {ARTIFACTS_VOLUME}/environment.yml
+  Option 1 - Volume:
+    Wheel: {ARTIFACTS_VOLUME}/nemweb_datasource-*.whl
+    Spec:  {ARTIFACTS_VOLUME}/environment.yml
+
+  Option 2 - Workspace (if Volume doesn't work):
+    Wheel: /Workspace{repo_root}/artifacts/nemweb_datasource-*.whl
+    Spec:  /Workspace{repo_root}/artifacts/environment.yml
 
   To set as workspace default:
   1. Settings > Compute > Base environments > Manage
-  2. Create new environment, select environment.yml
+  2. Create new environment, select environment.yml from either location
   3. Click star icon to set as default
 
 Next Steps:
@@ -574,7 +597,9 @@ print("=" * 60)
 # MAGIC    - Click **Create new environment**
 # MAGIC    - Enter a name (e.g., `nemweb-lab`)
 # MAGIC    - Click the folder icon to browse for the YAML file
-# MAGIC    - Navigate to: `Volumes > [catalog] > nemweb_lab > artifacts > environment.yml`
+# MAGIC    - Choose one of these locations:
+# MAGIC      - **Volume**: `Volumes > [catalog] > nemweb_lab > artifacts > environment.yml`
+# MAGIC      - **Workspace**: `Workspace > Users > [you] > [repo] > artifacts > environment.yml`
 # MAGIC    - Click **Create**
 # MAGIC
 # MAGIC 5. **Set as Default**
@@ -594,10 +619,17 @@ print("=" * 60)
 # MAGIC
 # MAGIC ### File Locations
 # MAGIC
+# MAGIC **Option 1: UC Volume** (recommended)
 # MAGIC | File | Path |
 # MAGIC |------|------|
 # MAGIC | Environment YAML | `/Volumes/{catalog}/nemweb_lab/artifacts/environment.yml` |
 # MAGIC | Wheel | `/Volumes/{catalog}/nemweb_lab/artifacts/nemweb_datasource-{version}-py3-none-any.whl` |
+# MAGIC
+# MAGIC **Option 2: Workspace Files** (if Volume doesn't work)
+# MAGIC | File | Path |
+# MAGIC |------|------|
+# MAGIC | Environment YAML | `/Workspace/.../databricks-nemweb-lab/artifacts/environment.yml` |
+# MAGIC | Wheel | `/Workspace/.../databricks-nemweb-lab/artifacts/nemweb_datasource-{version}-py3-none-any.whl` |
 # MAGIC
 # MAGIC > **Note:** The environment.yml references the versioned wheel file. When updating the package,
 # MAGIC > re-run this setup notebook to rebuild the wheel and update the environment.yml.
