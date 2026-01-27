@@ -214,6 +214,15 @@ check_schema()
 # MAGIC
 # MAGIC NEMWEB data comes as CSV files inside ZIP archives with a complex multi-record format.
 # MAGIC We've provided helper functions so you can focus on the **Data Source API**.
+# MAGIC
+# MAGIC **Note:** The helper functions fetch **REAL data** from AEMO NEMWEB CURRENT folder
+# MAGIC (last ~7 days of 5-minute interval files). This ensures you're working with actual
+# MAGIC electricity market data.
+# MAGIC
+# MAGIC **Important:** Real AEMO DISPATCHREGIONSUM data contains ~130+ columns, but our schema
+# MAGIC only defines 12 key fields. The `parse_nemweb_csv()` function automatically filters
+# MAGIC to only the fields in your schema - extra columns are ignored, and missing columns
+# MAGIC are set to `None` (which is fine since all fields are nullable).
 
 # COMMAND ----------
 
@@ -224,15 +233,31 @@ import os
 from nemweb_utils import fetch_nemweb_current, parse_nemweb_csv
 
 # Quick test - these helpers handle HTTP fetching and CSV parsing
+# This fetches REAL data from AEMO NEMWEB CURRENT folder (last ~7 days)
 test_data = fetch_nemweb_current(
     table="DISPATCHREGIONSUM",
     region="NSW1",
     max_files=2,
-    use_sample=True  # Use sample data for quick testing
+    use_sample=False,  # Fetch real current files from AEMO
+    debug=True  # Print debug info
 )
 print(f"Helper function works! Got {len(test_data)} rows")
 if test_data:
-    print(f"Sample row keys: {list(test_data[0].keys())[:5]}...")
+    # Note: Real AEMO data has MANY more columns (~130+) than our 12-field schema
+    # parse_nemweb_csv() will filter to only the fields in our schema
+    all_keys = list(test_data[0].keys())
+    print(f"Raw CSV has {len(all_keys)} columns (AEMO includes many fields)")
+    print(f"Sample row keys (first 10): {all_keys[:10]}...")
+    print(f"Sample SETTLEMENTDATE: {test_data[0].get('SETTLEMENTDATE')}")
+    
+    # Verify key fields exist in real data
+    required_fields = ["SETTLEMENTDATE", "REGIONID", "RUNNO", "TOTALDEMAND", 
+                      "AVAILABLEGENERATION", "NETINTERCHANGE"]
+    missing = [f for f in required_fields if f not in all_keys]
+    if missing:
+        print(f"⚠️  WARNING: Missing fields in real data: {missing}")
+    else:
+        print(f"✅ All required fields present in real data")
 
 # COMMAND ----------
 
@@ -262,7 +287,7 @@ class NemwebReader(DataSourceReader):
         self.schema = schema
         self.options = options
         self.regions = options.get("regions", "NSW1,QLD1,SA1,VIC1,TAS1").split(",")
-        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        yesterday = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
         self.start_date = options.get("start_date", yesterday)
         self.end_date = options.get("end_date", yesterday)
 
@@ -303,17 +328,31 @@ class NemwebReader(DataSourceReader):
            - table="DISPATCHREGIONSUM"
            - region=partition.region
            - max_files=6
+           - use_sample=False  # Fetch real current files from AEMO
+           - debug=True  # Print debug info to help diagnose issues
+           - target_date=self.start_date  # Filter files by date (handles timezone issues)
 
         2. Call parse_nemweb_csv(data, self.schema) to convert to tuples
 
         3. Yield each tuple from the result
 
+        Note: The target_date parameter filters files by date extracted from filenames
+        (format: PUBLIC_DISPATCHIS_YYYYMMDDHHMM_*.zip). This ensures we get files
+        from the correct date even with timezone differences.
+
         Example:
             data = fetch_nemweb_current(
                 table="DISPATCHREGIONSUM",
                 region=partition.region,
-                max_files=6
+                max_files=6,
+                use_sample=False,  # Fetch real current files from AEMO
+                debug=True,  # Print debug info (visible in worker logs)
+                target_date=self.start_date  # Filter to files from this date
             )
+            # Log to help diagnose empty results (visible in Spark UI logs)
+            if not data:
+                import sys
+                print(f"[WORKER] WARNING: No data fetched for region {partition.region}, date {self.start_date}", file=sys.stderr)
             for row_tuple in parse_nemweb_csv(data, self.schema):
                 yield row_tuple
         """
@@ -423,16 +462,41 @@ class NemwebDataSource(DataSource):
 
 # MAGIC %md
 # MAGIC ## Part 4: Register and Test
+# MAGIC
+# MAGIC **Note:** The tuple-based datasource implementation above works for learning,
+# MAGIC but Spark Connect (Serverless) has strict datetime serialization requirements
+# MAGIC that can cause `AssertionError` issues. For production use, see the Arrow-based
+# MAGIC datasource below which uses PyArrow RecordBatches to avoid serialization issues.
 
 # COMMAND ----------
 
-# Register the data source with Spark
-spark.dataSource.register(NemwebDataSource)
+# Option 1: Test your tuple-based datasource (may have Spark Connect issues)
+# Uncomment to test your implementation:
+# spark.dataSource.register(NemwebDataSource)
+# df = (spark.read
+#       .format("nemweb")
+#       .option("regions", "NSW1")
+#       .load())
+# print(f"Row count: {df.count()}")
+# display(df.limit(5))
 
-# Read data using your custom data source!
+# Option 2: Use the production Arrow datasource (works perfectly with Spark Connect)
+# This uses PyArrow RecordBatches which bypasses Python datetime serialization
+from nemweb_datasource_arrow import NemwebArrowDataSource
+from datetime import datetime, timedelta
+
+spark.dataSource.register(NemwebArrowDataSource)
+
+# Use 2 days ago for CURRENT files (CURRENT has ~7 days of data, but timezone differences mean yesterday may not be available yet)
+yesterday = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
+
+# Read data using the Arrow datasource - fetches real current files
 df = (spark.read
-      .format("nemweb")
+      .format("nemweb_arrow")
+      .option("table", "DISPATCHREGIONSUM")
       .option("regions", "NSW1")  # Single region for speed
+      .option("start_date", yesterday)  # Use recent date for CURRENT files
+      .option("end_date", yesterday)
       .load())
 
 # Display results
@@ -528,7 +592,7 @@ validate_implementation()
 # MAGIC %md
 # MAGIC ## Summary
 # MAGIC
-# MAGIC You built a custom PySpark data source that fetches **live data** from NEMWEB!
+# MAGIC You learned how to build a custom PySpark data source! The concepts you learned:
 # MAGIC
 # MAGIC | Component | Purpose |
 # MAGIC |-----------|---------|
@@ -538,14 +602,19 @@ validate_implementation()
 # MAGIC | `DataSourceReader.partitions()` | Plan parallel work units |
 # MAGIC | `DataSourceReader.read()` | Fetch and yield data (runs on workers) |
 # MAGIC
-# MAGIC ## Compare to Production
+# MAGIC ## Production Implementation
 # MAGIC
-# MAGIC Your implementation is a simplified version. The production code in
-# MAGIC `src/nemweb_datasource_arrow.py` adds:
+# MAGIC For production use, see `src/nemweb_datasource_arrow.py` which uses:
 # MAGIC - **PyArrow RecordBatch** for zero-copy transfer (Serverless compatible)
+# MAGIC - **Avoids datetime serialization issues** by using Arrow's native types
 # MAGIC - **Volume mode** with parallel downloads to UC Volume
 # MAGIC - **Multiple tables** (DISPATCHREGIONSUM, DISPATCHPRICE, TRADINGPRICE)
 # MAGIC - **Retry logic** with exponential backoff
+# MAGIC
+# MAGIC **Note:** The tuple-based approach above works for learning, but Spark Connect
+# MAGIC (Serverless) has strict datetime serialization requirements. The Arrow datasource
+# MAGIC bypasses Python serialization entirely by using PyArrow RecordBatches, which is
+# MAGIC why it works perfectly in production.
 # MAGIC
 # MAGIC ## Next Steps
 # MAGIC
