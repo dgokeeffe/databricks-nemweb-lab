@@ -10,17 +10,19 @@
 # MAGIC ## Topics Covered
 # MAGIC 1. **Liquid Clustering** - Modern data layout (DBR 13.3+)
 # MAGIC 2. **Generated Columns + Partitioning** - Traditional approach
-# MAGIC 3. **OPTIMIZE** - File compaction and data layout
-# MAGIC 4. **ANALYZE TABLE** - Collect statistics for Cost-Based Optimizer
-# MAGIC 5. **VACUUM** - Storage cleanup
-# MAGIC 6. **Predictive Optimization** - Automatic maintenance
+# MAGIC 3. **File Size Configuration** - Target file size for OPTIMIZE operations
+# MAGIC 4. **OPTIMIZE** - File compaction and data layout
+# MAGIC 5. **ANALYZE TABLE** - Collect statistics for Cost-Based Optimizer
+# MAGIC 6. **VACUUM** - Storage cleanup
+# MAGIC 7. **Predictive Optimization** - Automatic maintenance
 # MAGIC
 # MAGIC ## Learning Objectives
 # MAGIC 1. Understand when to use liquid clustering vs. partitioning
 # MAGIC 2. Implement both approaches for the same dataset
-# MAGIC 3. Measure query performance differences
-# MAGIC 4. Collect table statistics with ANALYZE TABLE
-# MAGIC 5. Configure Delta table maintenance for production
+# MAGIC 3. Configure target file size for optimal performance
+# MAGIC 4. Measure query performance differences
+# MAGIC 5. Collect table statistics with ANALYZE TABLE
+# MAGIC 6. Configure Delta table maintenance for production
 # MAGIC
 # MAGIC ## Prerequisites
 # MAGIC - Run **00_setup_and_validation.py** first to pre-load NEMWEB data
