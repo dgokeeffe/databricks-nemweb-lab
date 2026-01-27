@@ -1,0 +1,5 @@
+# Base environment for NEMWEB Lab
+# Deploy this via: Settings > Compute > Base environments > Manage
+environment_version: '4'
+dependencies:
+  - /Workspace/Users/<your-email>/.bundle/nemweb-lab/dev/files/databricks-nemweb-lab/artifacts/nemweb_datasource-2.10.4-py3-none-any.whl
