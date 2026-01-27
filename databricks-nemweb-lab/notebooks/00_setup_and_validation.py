@@ -269,21 +269,19 @@ if wheels:
     latest_wheel = sorted(wheels)[-1]
     wheel_filename = os.path.basename(latest_wheel)
 
-    # Copy wheel to artifacts volume with versioned and latest names
+    # Copy wheel to artifacts volume (versioned name only - pip requires valid wheel names)
     dest_wheel = f"{ARTIFACTS_VOLUME}/{wheel_filename}"
-    dest_latest = f"{ARTIFACTS_VOLUME}/nemweb_datasource-latest.whl"
 
     shutil.copy2(latest_wheel, dest_wheel)
-    shutil.copy2(latest_wheel, dest_latest)
 
     print(f"Deployed wheel to: {dest_wheel}")
-    print(f"Latest alias:      {dest_latest}")
 
     # Create environment.yml for base environment
     # Format matches Databricks docs: https://docs.databricks.com/aws/en/admin/workspace-settings/base-environment
+    # NOTE: Must use properly versioned wheel name - pip rejects invalid names like "latest.whl"
     env_content = f"""environment_version: '4'
 dependencies:
-  - {dest_latest}
+  - {dest_wheel}
 """
 
     env_path = f"{ARTIFACTS_VOLUME}/environment.yml"
@@ -516,7 +514,7 @@ Data Tables:
     - Source: OpenNEM (github.com/opennem/opennem)
 
 Base Environment (for workspace-wide use):
-  Wheel:    {ARTIFACTS_VOLUME}/nemweb_datasource-latest.whl
+  Wheel:    {ARTIFACTS_VOLUME}/nemweb_datasource-*.whl
   Spec:     {ARTIFACTS_VOLUME}/environment.yml
 
   To set as workspace default:
@@ -599,5 +597,7 @@ print("=" * 60)
 # MAGIC | File | Path |
 # MAGIC |------|------|
 # MAGIC | Environment YAML | `/Volumes/{catalog}/nemweb_lab/artifacts/environment.yml` |
-# MAGIC | Wheel (versioned) | `/Volumes/{catalog}/nemweb_lab/artifacts/nemweb_datasource-{version}.whl` |
-# MAGIC | Wheel (latest) | `/Volumes/{catalog}/nemweb_lab/artifacts/nemweb_datasource-latest.whl` |
+# MAGIC | Wheel | `/Volumes/{catalog}/nemweb_lab/artifacts/nemweb_datasource-{version}-py3-none-any.whl` |
+# MAGIC
+# MAGIC > **Note:** The environment.yml references the versioned wheel file. When updating the package,
+# MAGIC > re-run this setup notebook to rebuild the wheel and update the environment.yml.
