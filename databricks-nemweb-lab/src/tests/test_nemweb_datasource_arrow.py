@@ -180,6 +180,36 @@ class TestNemwebArrowReader:
 
         assert partitions == []
 
+    def test_volume_partitions_filters_by_date_range(self, tmp_path):
+        """Volume partitions should only include files within date range."""
+        # Create archive subfolder with test files
+        archive_dir = tmp_path / "dispatchis" / "archive"
+        archive_dir.mkdir(parents=True)
+
+        # Create files for different dates
+        (archive_dir / "PUBLIC_DISPATCHIS_20240101.zip").touch()
+        (archive_dir / "PUBLIC_DISPATCHIS_20240102.zip").touch()
+        (archive_dir / "PUBLIC_DISPATCHIS_20240103.zip").touch()
+        (archive_dir / "PUBLIC_DISPATCHIS_20240115.zip").touch()  # Outside range
+
+        schema = self.get_test_schema()
+        options = {
+            "volume_path": str(tmp_path),
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-03"
+        }
+
+        reader = NemwebArrowReader(schema, options)
+        partitions = reader._volume_partitions()
+
+        # Should only include 3 files (Jan 1-3), not Jan 15
+        assert len(partitions) == 3
+        file_names = [p.file_path.split("/")[-1] for p in partitions]
+        assert "PUBLIC_DISPATCHIS_20240101.zip" in file_names
+        assert "PUBLIC_DISPATCHIS_20240102.zip" in file_names
+        assert "PUBLIC_DISPATCHIS_20240103.zip" in file_names
+        assert "PUBLIC_DISPATCHIS_20240115.zip" not in file_names
+
     def test_build_url_recent_date(self):
         """Recent dates should use CURRENT folder."""
         schema = self.get_test_schema()
