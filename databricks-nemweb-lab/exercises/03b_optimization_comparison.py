@@ -26,6 +26,11 @@
 # MAGIC
 # MAGIC ## Prerequisites
 # MAGIC - Run **00_setup_and_validation.py** first to pre-load NEMWEB data
+# MAGIC
+# MAGIC ## Serverless Compute Note
+# MAGIC This exercise runs on serverless compute which has some limitations:
+# MAGIC - No `.cache()` or `.persist()` available (data is re-read as needed)
+# MAGIC - No custom Spark configs (auto-tuned by platform)
 
 # COMMAND ----------
 
@@ -104,8 +109,8 @@ nemweb_data = (
     )
 )
 
-# Cache for reuse
-nemweb_data.cache()
+# Note: .cache() is not available on serverless compute
+# Data will be re-read from Delta tables which is efficient due to caching at the storage layer
 print(f"Prepared {nemweb_data.count():,} rows for optimization comparison")
 
 # COMMAND ----------
@@ -763,7 +768,7 @@ except Exception as e:
 
 # COMMAND ----------
 
-nemweb_data.unpersist()
+# Note: .unpersist() not needed on serverless (no .cache() available)
 
 # Uncomment to clean up test tables
 # spark.sql("DROP TABLE IF EXISTS nemweb_liquid_clustered")
