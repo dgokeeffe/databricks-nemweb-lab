@@ -19,7 +19,13 @@ Sinks (writers):
     - MetricsDataSource: Publishes metrics to observability endpoints
 """
 
-from .nemweb_datasource import NemwebDataSource, NemwebStreamReader
+try:
+    from .nemweb_datasource import NemwebDataSource, NemwebStreamReader
+except ImportError:
+    # nemweb_datasource.py may not exist (educational implementation)
+    NemwebDataSource = None
+    NemwebStreamReader = None
+
 from .nemweb_datasource_arrow import NemwebArrowDataSource
 from .nem_registry import NemRegistryDataSource, load_registry_data
 from .nemweb_utils import (
@@ -35,10 +41,10 @@ from .nemweb_sink import PriceAlertDataSource, MetricsDataSource
 
 __all__ = [
     # Data sources (readers)
-    "NemwebDataSource",      # format: 'nemweb' - educational
+    "NemwebDataSource",      # format: 'nemweb' - educational (may be None)
     "NemwebArrowDataSource", # format: 'nemweb_arrow' - production
     "NemRegistryDataSource", # format: 'nem_registry' - generator metadata
-    "NemwebStreamReader",
+    "NemwebStreamReader",    # may be None
     # Data sinks (writers)
     "PriceAlertDataSource",
     "MetricsDataSource",

@@ -13,13 +13,14 @@ import io
 import zipfile
 
 from pyspark.sql.types import (
-    StructType, StructField, StringType, DoubleType, IntegerType
+    StructType, StructField, StringType, DoubleType, IntegerType, TimestampType
 )
 
 # Import the module under test (path configured in conftest.py)
 from nemweb_utils import (
     fetch_with_retry,
     fetch_nemweb_data,
+    fetch_nemweb_current,
     _build_nemweb_url,
     _get_sample_data,
     _convert_value,
@@ -290,6 +291,129 @@ class TestParseNemwebCsv:
 
         assert len(result) == 3
         assert [r[0] for r in result] == ["NSW1", "VIC1", "QLD1"]
+
+    def test_parse_sample_data_with_dispatchregionsum_schema(self):
+        """
+        Test parsing sample data with DISPATCHREGIONSUM schema (matching solution notebook).
+        
+        This test verifies that:
+        1. fetch_nemweb_current with use_sample=True returns correct data
+        2. parse_nemweb_csv correctly converts to tuples matching schema
+        3. Present fields are parsed correctly (timestamps, strings, doubles)
+        4. Missing fields are set to None (which is correct behavior)
+        
+        This matches the test case from solutions/01_custom_source_solution.ipynb
+        """
+        from datetime import datetime
+        
+        # Define schema matching solution notebook (with TimestampType for SETTLEMENTDATE)
+        def get_dispatchregionsum_schema() -> StructType:
+            """Return the schema for DISPATCHREGIONSUM table (matching solution notebook)."""
+            return StructType([
+                StructField("SETTLEMENTDATE", TimestampType(), True),
+                StructField("RUNNO", StringType(), True),
+                StructField("REGIONID", StringType(), True),
+                StructField("DISPATCHINTERVAL", StringType(), True),
+                StructField("INTERVENTION", StringType(), True),
+                StructField("TOTALDEMAND", DoubleType(), True),
+                StructField("AVAILABLEGENERATION", DoubleType(), True),
+                StructField("AVAILABLELOAD", DoubleType(), True),
+                StructField("DEMANDFORECAST", DoubleType(), True),
+                StructField("DISPATCHABLEGENERATION", DoubleType(), True),
+                StructField("DISPATCHABLELOAD", DoubleType(), True),
+                StructField("NETINTERCHANGE", DoubleType(), True),
+            ])
+        
+        schema = get_dispatchregionsum_schema()
+        
+        # Fetch sample data (matching solution notebook call)
+        data = fetch_nemweb_current(
+            table="DISPATCHREGIONSUM",
+            region="NSW1",
+            max_files=6,
+            use_sample=True,  # Use sample data for testing
+            debug=False  # Don't print debug info in tests
+        )
+        
+        # Verify we got data
+        assert len(data) > 0, "Should get at least one row"
+        assert data[0]["REGIONID"] == "NSW1", "Should filter by region"
+        
+        # Parse to tuples
+        tuples = list(parse_nemweb_csv(data, schema))
+        
+        # Verify we got tuples
+        assert len(tuples) > 0, "Should parse at least one tuple"
+        assert len(tuples) == len(data), "Should parse all rows"
+        
+        # Verify first tuple structure (matching expected output from solution notebook)
+        first_tuple = tuples[0]
+        
+        # Verify tuple has correct length (12 fields)
+        assert len(first_tuple) == 12, f"Expected 12 fields, got {len(first_tuple)}"
+        
+        # Verify SETTLEMENTDATE is datetime (index 0)
+        assert isinstance(first_tuple[0], datetime), \
+            f"SETTLEMENTDATE should be datetime, got {type(first_tuple[0]).__name__}"
+        assert first_tuple[0] == datetime(2024, 1, 1, 0, 5), \
+            f"SETTLEMENTDATE should be 2024-01-01 00:05:00, got {first_tuple[0]}"
+        
+        # Verify RUNNO is string (index 1)
+        assert first_tuple[1] == "1", f"RUNNO should be '1', got {first_tuple[1]}"
+        
+        # Verify REGIONID is string (index 2)
+        assert first_tuple[2] == "NSW1", f"REGIONID should be 'NSW1', got {first_tuple[2]}"
+        
+        # Verify DISPATCHINTERVAL is string (index 3)
+        assert first_tuple[3] == "1", f"DISPATCHINTERVAL should be '1', got {first_tuple[3]}"
+        
+        # Verify INTERVENTION is string (index 4)
+        assert first_tuple[4] == "0", f"INTERVENTION should be '0', got {first_tuple[4]}"
+        
+        # Verify TOTALDEMAND is float (index 5)
+        assert isinstance(first_tuple[5], float), \
+            f"TOTALDEMAND should be float, got {type(first_tuple[5]).__name__}"
+        assert first_tuple[5] == 7500.5, f"TOTALDEMAND should be 7500.5, got {first_tuple[5]}"
+        
+        # Verify AVAILABLEGENERATION is float (index 6)
+        assert isinstance(first_tuple[6], float), \
+            f"AVAILABLEGENERATION should be float, got {type(first_tuple[6]).__name__}"
+        assert first_tuple[6] == 8000.0, f"AVAILABLEGENERATION should be 8000.0, got {first_tuple[6]}"
+        
+        # Verify missing fields are None (indices 7-10)
+        # These fields (AVAILABLELOAD, DEMANDFORECAST, DISPATCHABLEGENERATION, DISPATCHABLELOAD)
+        # are not in the sample data, so they should be None
+        assert first_tuple[7] is None, \
+            f"AVAILABLELOAD should be None (missing from sample data), got {first_tuple[7]}"
+        assert first_tuple[8] is None, \
+            f"DEMANDFORECAST should be None (missing from sample data), got {first_tuple[8]}"
+        assert first_tuple[9] is None, \
+            f"DISPATCHABLEGENERATION should be None (missing from sample data), got {first_tuple[9]}"
+        assert first_tuple[10] is None, \
+            f"DISPATCHABLELOAD should be None (missing from sample data), got {first_tuple[10]}"
+        
+        # Verify NETINTERCHANGE is float (index 11)
+        assert isinstance(first_tuple[11], float), \
+            f"NETINTERCHANGE should be float, got {type(first_tuple[11]).__name__}"
+        assert first_tuple[11] == -200.5, f"NETINTERCHANGE should be -200.5, got {first_tuple[11]}"
+        
+        # Verify the tuple matches expected structure exactly
+        expected_tuple = (
+            datetime(2024, 1, 1, 0, 5),  # SETTLEMENTDATE
+            '1',                          # RUNNO
+            'NSW1',                      # REGIONID
+            '1',                         # DISPATCHINTERVAL
+            '0',                         # INTERVENTION
+            7500.5,                      # TOTALDEMAND
+            8000.0,                      # AVAILABLEGENERATION
+            None,                        # AVAILABLELOAD (missing)
+            None,                        # DEMANDFORECAST (missing)
+            None,                        # DISPATCHABLEGENERATION (missing)
+            None,                        # DISPATCHABLELOAD (missing)
+            -200.5,                      # NETINTERCHANGE
+        )
+        assert first_tuple == expected_tuple, \
+            f"Tuple doesn't match expected structure.\nGot:      {first_tuple}\nExpected: {expected_tuple}"
 
 
 class TestGetNemwebSchema:

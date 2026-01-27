@@ -162,7 +162,7 @@ wheels = [
 
 [[package]]
 name = "nemweb-datasource"
-version = "2.10.0"
+version = "2.10.12"
 source = { editable = "." }
 
 [package.optional-dependencies]
