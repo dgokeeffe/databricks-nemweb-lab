@@ -189,19 +189,21 @@ class NemwebArrowReader(DataSourceReader):
         # Use file prefix (dispatchis, tradingis) as folder name, not table name
         # This allows DISPATCHREGIONSUM and DISPATCHPRICE to share the same files
         _, file_prefix = TABLE_TO_FOLDER.get(self.table, ("DispatchIS_Reports", "DISPATCHIS"))
-        table_path = os.path.join(self.volume_path, file_prefix.lower())
+        base_path = os.path.join(self.volume_path, file_prefix.lower())
 
-        if not os.path.exists(table_path):
-            logger.warning(f"Volume path does not exist: {table_path}")
-            return []
+        # Collect files from both archive and current subfolders
+        files = []
+        for subfolder in ["archive", "current"]:
+            folder_path = os.path.join(base_path, subfolder)
+            if os.path.exists(folder_path):
+                files.extend([
+                    os.path.join(folder_path, f)
+                    for f in os.listdir(folder_path)
+                    if f.endswith('.zip')
+                ])
 
-        files = sorted([
-            os.path.join(table_path, f)
-            for f in os.listdir(table_path)
-            if f.endswith('.zip')
-        ])
-
-        logger.info(f"Found {len(files)} ZIP files in {table_path}")
+        files = sorted(files)
+        logger.info(f"Found {len(files)} ZIP files in {base_path}")
 
         return [
             NemwebArrowPartition(table=self.table, file_path=f)
@@ -245,15 +247,20 @@ class NemwebArrowReader(DataSourceReader):
 
         # Use file prefix (dispatchis, tradingis) as folder name, not table name
         # This allows DISPATCHREGIONSUM and DISPATCHPRICE to share the same downloaded files
-        table_path = os.path.join(self.volume_path, file_prefix.lower())
-        os.makedirs(table_path, exist_ok=True)
+        # Separate subfolders for archive (daily) vs current (5-min interval) files
+        base_path = os.path.join(self.volume_path, file_prefix.lower())
+        archive_path = os.path.join(base_path, "archive")
+        current_path = os.path.join(base_path, "current")
+        os.makedirs(archive_path, exist_ok=True)
+        os.makedirs(current_path, exist_ok=True)
 
         # Generate download tasks for date range
         start = datetime.strptime(self.start_date, "%Y-%m-%d")
         end = datetime.strptime(self.end_date, "%Y-%m-%d")
 
         print(f"Generating download tasks for {self.start_date} to {self.end_date}")
-        print(f"Target folder: {table_path}")
+        print(f"Archive folder: {archive_path}")
+        print(f"Current folder: {current_path}")
 
         # Note: Daily consolidated files are only available in ARCHIVE after ~7 days
         # Recent dates will return 404 since CURRENT only has 5-minute interval files
@@ -265,7 +272,7 @@ class NemwebArrowReader(DataSourceReader):
         while current <= end:
             date_str = current.strftime("%Y%m%d")
             filename = f"PUBLIC_{file_prefix}_{date_str}.zip"
-            dest_path = os.path.join(table_path, filename)
+            dest_path = os.path.join(archive_path, filename)
 
             # Skip dates that are too recent (not yet in ARCHIVE)
             if current > archive_cutoff:
@@ -358,13 +365,13 @@ class NemwebArrowReader(DataSourceReader):
 
         # Download recent files from CURRENT if enabled
         if self.include_current and skipped_recent > 0:
-            self._download_from_current(folder, file_prefix, table_path, archive_cutoff, end)
+            self._download_from_current(folder, file_prefix, current_path, archive_cutoff, end)
 
     def _download_from_current(
         self,
         folder: str,
         file_prefix: str,
-        table_path: str,
+        current_path: str,
         start_date: datetime,
         end_date: datetime
     ) -> None:
@@ -416,7 +423,7 @@ class NemwebArrowReader(DataSourceReader):
                     filename = full_match.group(1)
                     if filename not in seen_files:
                         seen_files.add(filename)
-                        dest_path = os.path.join(table_path, filename)
+                        dest_path = os.path.join(current_path, filename)
                         if not (self.skip_existing and os.path.exists(dest_path)):
                             files_to_download.append({
                                 "url": f"{NEMWEB_CURRENT_URL}/{folder}/{filename}",
