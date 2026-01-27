@@ -151,14 +151,14 @@ class TestNemwebDataSource:
     """Integration tests for the custom data source (requires understanding of structure)."""
 
     def test_nemweb_datasource_imports(self):
-        """Test that NemwebDataSource can be imported."""
-        from nemweb_datasource import NemwebDataSource
-        assert NemwebDataSource is not None
+        """Test that NemwebArrowDataSource can be imported."""
+        from nemweb_datasource_arrow import NemwebArrowDataSource
+        assert NemwebArrowDataSource is not None
 
     def test_nemweb_datasource_name(self):
         """Test that data source has correct name."""
-        from nemweb_datasource import NemwebDataSource
-        assert NemwebDataSource.name() == "nemweb"
+        from nemweb_datasource_arrow import NemwebArrowDataSource
+        assert NemwebArrowDataSource.name() == "nemweb_arrow"
 
 
 if __name__ == "__main__":

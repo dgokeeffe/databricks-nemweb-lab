@@ -148,49 +148,54 @@ class TestNemwebStreamReader:
         assert len(partitions) == 0
 
     def test_parse_timestamp(self, reader):
-        """Test timestamp parsing."""
+        """Test timestamp parsing via nemweb_utils helper."""
+        from nemweb_utils import _parse_timestamp_value
+
         # NEMWEB format
-        ts = reader._parse_timestamp("2024/01/01 12:05:00")
+        ts = _parse_timestamp_value("2024/01/01 12:05:00")
         assert ts == datetime(2024, 1, 1, 12, 5, 0)
 
         # Alternative format
-        ts = reader._parse_timestamp("2024-01-01 12:05:00")
+        ts = _parse_timestamp_value("2024-01-01 12:05:00")
         assert ts == datetime(2024, 1, 1, 12, 5, 0)
 
         # Invalid
-        ts = reader._parse_timestamp("invalid")
+        ts = _parse_timestamp_value("invalid")
         assert ts is None
 
         # Empty
-        ts = reader._parse_timestamp("")
+        ts = _parse_timestamp_value("")
         assert ts is None
 
     def test_to_python_float(self, reader):
-        """Test float conversion with pure Python type output."""
-        result = reader._to_python_float("123.45")
+        """Test float conversion via nemweb_utils helper."""
+        from nemweb_utils import _to_python_float
+
+        result = _to_python_float("123.45")
         assert result == 123.45
         assert isinstance(result, float)
 
-        assert reader._to_python_float("0") == 0.0
-        assert reader._to_python_float("-100.5") == -100.5
-        assert reader._to_python_float("") is None
-        assert reader._to_python_float(None) is None
-        assert reader._to_python_float("invalid") is None
+        assert _to_python_float("0") == 0.0
+        assert _to_python_float("-100.5") == -100.5
+        assert _to_python_float("") is None
+        assert _to_python_float(None) is None
+        assert _to_python_float("invalid") is None
 
     def test_to_python_datetime(self, reader):
         """Test datetime conversion returns pure Python datetime."""
         from datetime import datetime
+        from nemweb_utils import _to_python_datetime, _parse_timestamp_value
 
         # Parse timestamp first
-        ts = reader._parse_timestamp("2024/01/01 12:05:00")
-        result = reader._to_python_datetime(ts)
+        ts = _parse_timestamp_value("2024/01/01 12:05:00")
+        result = _to_python_datetime(ts)
 
         assert result == datetime(2024, 1, 1, 12, 5, 0)
         assert type(result).__module__ == "datetime"
         assert type(result).__name__ == "datetime"
 
         # None handling
-        assert reader._to_python_datetime(None) is None
+        assert _to_python_datetime(None) is None
 
 
 class TestNemwebStreamPartition:

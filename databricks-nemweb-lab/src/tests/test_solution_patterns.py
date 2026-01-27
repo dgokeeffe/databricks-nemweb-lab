@@ -167,10 +167,11 @@ class TestExercise01ParseNemwebCsv:
     def test_parse_nemweb_csv_converts_types(self):
         """parse_nemweb_csv should convert string values to correct types.
 
-        Note: Timestamps are returned as strings for Serverless compatibility.
-        Use Spark's to_timestamp() to cast after loading.
+        Note: Timestamps are returned as datetime.datetime objects.
+        The parse_nemweb_csv function yields Row objects with proper types.
         """
         from nemweb_utils import parse_nemweb_csv
+        from datetime import datetime
 
         schema = StructType([
             StructField("SETTLEMENTDATE", TimestampType(), True),
@@ -185,12 +186,12 @@ class TestExercise01ParseNemwebCsv:
         result = list(parse_nemweb_csv(test_data, schema))
         row = result[0]
 
-        # Timestamps returned as strings for Serverless compatibility
-        assert isinstance(row[0], str)
-        assert isinstance(row[1], str)
-        assert isinstance(row[2], float)
-        assert row[1] == "NSW1"
-        assert row[2] == 7500.5
+        # Timestamps returned as datetime.datetime objects
+        assert isinstance(row.SETTLEMENTDATE, datetime)
+        assert isinstance(row.REGIONID, str)
+        assert isinstance(row.TOTALDEMAND, float)
+        assert row.REGIONID == "NSW1"
+        assert row.TOTALDEMAND == 7500.5
 
 
 class TestExercise02DataQuality:
