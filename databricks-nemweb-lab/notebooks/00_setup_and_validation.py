@@ -551,3 +551,53 @@ print("=" * 60)
 # MAGIC - Downloads are parallel (8 threads by default)
 # MAGIC - Existing files are skipped automatically
 # MAGIC - Reduce date range for faster loading
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Configure Default Base Environment (Optional)
+# MAGIC
+# MAGIC To make the NEMWEB data source available to **all notebooks** in your workspace without needing to run setup each time, configure a workspace base environment.
+# MAGIC
+# MAGIC ### Step-by-Step Instructions
+# MAGIC
+# MAGIC 1. **Open Workspace Settings**
+# MAGIC    - Click your username in the top-right corner
+# MAGIC    - Select **Settings**
+# MAGIC
+# MAGIC 2. **Navigate to Compute Settings**
+# MAGIC    - In the left sidebar, under **Workspace admin**, click **Compute**
+# MAGIC
+# MAGIC 3. **Manage Base Environments**
+# MAGIC    - Find **Base environments for serverless compute**
+# MAGIC    - Click **Manage**
+# MAGIC
+# MAGIC 4. **Create New Environment**
+# MAGIC    - Click **Create new environment**
+# MAGIC    - Enter a name (e.g., `nemweb-lab`)
+# MAGIC    - Click the folder icon to browse for the YAML file
+# MAGIC    - Navigate to: `Volumes > [catalog] > nemweb_lab > artifacts > environment.yml`
+# MAGIC    - Click **Create**
+# MAGIC
+# MAGIC 5. **Set as Default**
+# MAGIC    - Wait for the environment status to show **Ready to use**
+# MAGIC    - Click the **star icon** (☆) next to your environment to set it as the workspace default
+# MAGIC
+# MAGIC ### Verify Configuration
+# MAGIC
+# MAGIC After setting the default, any new serverless notebook should automatically have access to the NEMWEB data source:
+# MAGIC
+# MAGIC ```python
+# MAGIC from nemweb_datasource_arrow import NemwebArrowDataSource
+# MAGIC spark.dataSource.register(NemwebArrowDataSource)
+# MAGIC
+# MAGIC df = spark.read.format("nemweb_arrow").option("table", "DISPATCHREGIONSUM").load()
+# MAGIC ```
+# MAGIC
+# MAGIC ### File Locations
+# MAGIC
+# MAGIC | File | Path |
+# MAGIC |------|------|
+# MAGIC | Environment YAML | `/Volumes/{catalog}/nemweb_lab/artifacts/environment.yml` |
+# MAGIC | Wheel (versioned) | `/Volumes/{catalog}/nemweb_lab/artifacts/nemweb_datasource-{version}.whl` |
+# MAGIC | Wheel (latest) | `/Volumes/{catalog}/nemweb_lab/artifacts/nemweb_datasource-latest.whl` |
