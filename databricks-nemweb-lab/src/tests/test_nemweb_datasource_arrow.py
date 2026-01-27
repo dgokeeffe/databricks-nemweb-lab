@@ -188,7 +188,9 @@ class TestNemwebArrowReader:
         recent_date = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
         url = reader._build_url("DISPATCHREGIONSUM", recent_date)
 
-        assert NEMWEB_CURRENT_URL in url
+        # Daily consolidated files are always in ARCHIVE
+        # CURRENT only has 5-minute interval files
+        assert NEMWEB_ARCHIVE_URL in url
         assert "DispatchIS_Reports" in url
         assert "PUBLIC_DISPATCHIS_" in url
 
@@ -635,15 +637,19 @@ class TestBuildDownloadUrl:
         schema = StructType([StructField("REGIONID", StringType(), True)])
         return NemwebArrowReader(schema, {})
 
-    def test_recent_date_uses_current_url(self):
-        """Dates within 7 days should use CURRENT URL."""
+    def test_all_dates_use_archive_url(self):
+        """All dates use ARCHIVE for daily consolidated files.
+
+        CURRENT folder only has 5-minute interval files, not daily aggregates.
+        """
         reader = self.get_reader()
-        # Use yesterday's date (always recent)
+        # Use yesterday's date
         recent_date = datetime.now() - timedelta(days=1)
 
         url = reader._build_download_url("DispatchIS_Reports", "DISPATCHIS", recent_date)
 
-        assert "CURRENT" in url
+        # Daily files are always in ARCHIVE
+        assert "ARCHIVE" in url
         assert "DispatchIS_Reports" in url
 
     def test_old_date_uses_archive_url(self):
@@ -761,7 +767,11 @@ class TestDownloadToVolume:
         return NemwebArrowReader(schema, options)
 
     def test_creates_table_subdirectory(self):
-        """Should create table subdirectory in volume."""
+        """Should create file prefix subdirectory in volume.
+
+        Directory structure is based on file_prefix (dispatchis) not table name,
+        allowing DISPATCHREGIONSUM and DISPATCHPRICE to share downloaded files.
+        """
         import tempfile
         import os
 
@@ -773,10 +783,10 @@ class TestDownloadToVolume:
                 mock_download.return_value = {"success": True, "error": None}
                 reader._download_to_volume()
 
-            # Should have created dispatchregionsum subdirectory
-            table_path = os.path.join(tmpdir, "dispatchregionsum")
-            assert os.path.exists(table_path)
-            assert os.path.isdir(table_path)
+            # Should have created dispatchis/archive subdirectory (not dispatchregionsum)
+            archive_path = os.path.join(tmpdir, "dispatchis", "archive")
+            assert os.path.exists(archive_path)
+            assert os.path.isdir(archive_path)
 
     def test_skips_existing_files(self):
         """Should skip existing files when skip_existing is True."""
@@ -786,10 +796,10 @@ class TestDownloadToVolume:
         with tempfile.TemporaryDirectory() as tmpdir:
             reader = self.get_reader(tmpdir, "2024-01-01", "2024-01-01")
 
-            # Create table directory and a file
-            table_path = os.path.join(tmpdir, "dispatchregionsum")
-            os.makedirs(table_path)
-            existing_file = os.path.join(table_path, "PUBLIC_DISPATCHIS_20240101.zip")
+            # Create the actual directory structure: dispatchis/archive/
+            archive_path = os.path.join(tmpdir, "dispatchis", "archive")
+            os.makedirs(archive_path)
+            existing_file = os.path.join(archive_path, "PUBLIC_DISPATCHIS_20240101.zip")
             with open(existing_file, 'wb') as f:
                 f.write(b"existing data")
 

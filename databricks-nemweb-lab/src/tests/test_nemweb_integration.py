@@ -28,15 +28,19 @@ class TestNemwebFetch:
         assert "PUBLIC_DISPATCHIS_" in url
         assert old_date.strftime("%Y%m%d") in url
 
-    def test_build_nemweb_url_current(self):
-        """Test URL building for current data (< 7 days old)."""
+    def test_build_nemweb_url_always_uses_archive(self):
+        """Test URL building always uses ARCHIVE for daily files.
+
+        CURRENT folder only has 5-minute interval files, not daily aggregates.
+        Use fetch_nemweb_current() for CURRENT folder access.
+        """
         from nemweb_utils import _build_nemweb_url
 
-        # Use yesterday's date
+        # Even recent dates use ARCHIVE for daily consolidated files
         yesterday = datetime.now() - timedelta(days=1)
         url = _build_nemweb_url("Dispatch_SCADA", "DISPATCHSCADA", yesterday)
 
-        assert "CURRENT" in url
+        assert "ARCHIVE" in url
         assert "PUBLIC_DISPATCHSCADA_" in url
 
     def test_fetch_and_extract_zip_real(self):

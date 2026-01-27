@@ -119,12 +119,17 @@ class TestFetchWithRetry:
 class TestBuildNemwebUrl:
     """Tests for _build_nemweb_url function."""
 
-    def test_recent_date_uses_current(self):
-        """Recent dates should use CURRENT folder."""
+    def test_recent_date_uses_archive(self):
+        """All dates use ARCHIVE for daily consolidated files.
+
+        CURRENT folder only has 5-minute interval files, not daily aggregates.
+        Use fetch_nemweb_current() for CURRENT folder access.
+        """
         recent_date = datetime.now() - timedelta(days=2)
         url = _build_nemweb_url("Dispatch_SCADA", "DISPATCHREGIONSUM", recent_date)
 
-        assert NEMWEB_CURRENT_URL in url
+        # Daily files are always in ARCHIVE
+        assert NEMWEB_ARCHIVE_URL in url
         assert "Dispatch_SCADA" in url
         assert "DISPATCHREGIONSUM" in url
         assert url.endswith(".zip")

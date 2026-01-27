@@ -408,7 +408,9 @@ def fetch_new_files_since_checkpoint(table: str, max_files: int = 12) -> list[st
         html = response.read().decode('utf-8')
 
     # Find all matching files
-    pattern = rf'href="(PUBLIC_{file_prefix}_\d{{12}}\.zip)"'
+    # Pattern: PUBLIC_DISPATCHIS_202501270005_0000000500374526.zip
+    # Format: PREFIX_YYYYMMDDHHMM_SEQUENCEID.zip
+    pattern = rf'href="(PUBLIC_{file_prefix}_\d{{12}}_\d+\.zip)"'
     all_files = sorted(re.findall(pattern, html, re.IGNORECASE))
 
     # Filter to files newer than checkpoint
