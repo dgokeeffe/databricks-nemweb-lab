@@ -133,45 +133,49 @@ except urllib.error.URLError as e:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 5. Build and Install Lab Package
+# MAGIC ## 5. Install Lab Package
+# MAGIC
+# MAGIC The wheel is pre-built and deployed with the bundle to the artifacts folder.
 
 # COMMAND ----------
 
 import os
-import subprocess
 import glob
 
 # Get workspace paths
 notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
 repo_root = os.path.dirname(os.path.dirname(notebook_path))
 workspace_root = f"/Workspace{repo_root}"
-src_path = f"{workspace_root}/src"
+artifacts_path = f"{workspace_root}/artifacts"
 
 print(f"Repository: {workspace_root}")
-print(f"Source:     {src_path}")
+print(f"Artifacts:  {artifacts_path}")
 
-# COMMAND ----------
+# Find pre-built wheel from artifacts (deployed with bundle)
+wheel_pattern = f"{artifacts_path}/nemweb_datasource-*.whl"
+wheels = glob.glob(wheel_pattern)
 
-# Build wheel
-print("Building wheel...")
-result = subprocess.run(
-    f"cd {workspace_root} && uv build src --wheel",
-    shell=True, capture_output=True, text=True
-)
-
-if result.returncode != 0:
-    print(f"Build output: {result.stdout}")
-    print(f"Build errors: {result.stderr}")
-    raise RuntimeError("Wheel build failed")
-
-# Find wheel
-wheels = glob.glob(f"{src_path}/dist/nemweb_datasource-*.whl")
-if not wheels:
-    raise FileNotFoundError("No wheel found after build")
-
-latest_wheel = sorted(wheels)[-1]
-wheel_filename = os.path.basename(latest_wheel)
-print(f"Built: {wheel_filename}")
+if wheels:
+    # Use latest version (sorted by name)
+    latest_wheel = sorted(wheels)[-1]
+    print(f"Found pre-built wheel: {latest_wheel}")
+else:
+    # Fallback: try to build if not found (for local development)
+    import subprocess
+    print("Pre-built wheel not found, building from source...")
+    src_path = f"{workspace_root}/src"
+    result = subprocess.run(
+        f"cd {src_path} && uv build --wheel --out-dir dist",
+        shell=True, capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        print(f"Build errors: {result.stderr}")
+        raise RuntimeError("Wheel build failed")
+    wheels = glob.glob(f"{src_path}/dist/nemweb_datasource-*.whl")
+    if not wheels:
+        raise FileNotFoundError("No wheel found after build")
+    latest_wheel = sorted(wheels)[-1]
+    print(f"Built: {os.path.basename(latest_wheel)}")
 
 # COMMAND ----------
 
@@ -245,72 +249,57 @@ print(f"Artifacts: {ARTIFACTS_VOLUME}")
 # MAGIC %md
 # MAGIC ## 7b. Deploy Wheel to UC Volume for Base Environment
 # MAGIC
-# MAGIC This copies the wheel to a UC Volume so it can be used in a serverless base environment.
-# MAGIC To set up the base environment:
+# MAGIC This copies the pre-built wheel to a UC Volume so it can be used in a serverless base environment.
+# MAGIC
+# MAGIC **To set up the base environment:**
 # MAGIC 1. Go to **Settings > Compute > Base environments**
 # MAGIC 2. Click **Manage > Create new environment**
-# MAGIC 3. Select the environment.yml from the artifacts volume
+# MAGIC 3. Select the `environment.yml` from the artifacts volume
 # MAGIC 4. Click the star icon to set as default
 
 # COMMAND ----------
 
 import os
 import shutil
+import glob
 
-# Get wheel info from before restart (re-find it)
+# Get paths
 notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
 repo_root = os.path.dirname(os.path.dirname(notebook_path))
 workspace_root = f"/Workspace{repo_root}"
-src_path = f"{workspace_root}/src"
+artifacts_path = f"{workspace_root}/artifacts"
 
-import glob
-wheels = glob.glob(f"{src_path}/dist/nemweb_datasource-*.whl")
+# Find the pre-built wheel from bundle deployment
+wheel_pattern = f"{artifacts_path}/nemweb_datasource-*.whl"
+wheels = glob.glob(wheel_pattern)
+
 if wheels:
+    # Use latest version (sorted by name)
     latest_wheel = sorted(wheels)[-1]
-    wheel_filename = os.path.basename(latest_wheel)
+    wheel_name = os.path.basename(latest_wheel)
 
-    # --- Deploy to UC Volume ---
-    dest_wheel_volume = f"{ARTIFACTS_VOLUME}/{wheel_filename}"
+    # Deploy to UC Volume (keeping original name)
+    dest_wheel_volume = f"{ARTIFACTS_VOLUME}/{wheel_name}"
     shutil.copy2(latest_wheel, dest_wheel_volume)
     print(f"Deployed wheel to Volume: {dest_wheel_volume}")
 
-    # --- Deploy to Workspace ---
-    workspace_artifacts = f"{workspace_root}/artifacts"
-    os.makedirs(workspace_artifacts, exist_ok=True)
-    dest_wheel_workspace = f"{workspace_artifacts}/{wheel_filename}"
-    shutil.copy2(latest_wheel, dest_wheel_workspace)
-    print(f"Deployed wheel to Workspace: {dest_wheel_workspace}")
-
-    # Create environment.yml for base environment
-    # Format matches Databricks docs: https://docs.databricks.com/aws/en/admin/workspace-settings/base-environment
-    # NOTE: Must use properly versioned wheel name - pip rejects invalid names like "latest.whl"
-
-    # Volume-based environment.yml
-    env_content_volume = f"""environment_version: '4'
+    # Create environment.yml for base environment pointing to Volume
+    env_content = f"""environment_version: '4'
 dependencies:
   - {dest_wheel_volume}
 """
-    env_path_volume = f"{ARTIFACTS_VOLUME}/environment.yml"
-    with open(env_path_volume, 'w') as f:
-        f.write(env_content_volume)
-    print(f"Environment spec (Volume): {env_path_volume}")
-
-    # Workspace-based environment.yml
-    env_content_workspace = f"""environment_version: '4'
-dependencies:
-  - {dest_wheel_workspace}
-"""
-    env_path_workspace = f"{workspace_artifacts}/environment.yml"
-    with open(env_path_workspace, 'w') as f:
-        f.write(env_content_workspace)
-    print(f"Environment spec (Workspace): {env_path_workspace}")
+    env_path = f"{ARTIFACTS_VOLUME}/environment.yml"
+    with open(env_path, 'w') as f:
+        f.write(env_content)
+    print(f"Environment spec: {env_path}")
 
     print()
-    print("Base environment files ready. Choose either:")
-    print(f"  - Volume:    {env_path_volume}")
-    print(f"  - Workspace: {env_path_workspace}")
+    print("Base environment ready!")
+    print(f"  Wheel: {dest_wheel_volume}")
+    print(f"  Spec:  {env_path}")
 else:
-    print("Warning: No wheel found - base environment not configured")
+    print(f"Warning: No wheel found matching {wheel_pattern}")
+    print("Run 'databricks bundle deploy' to deploy the wheel.")
 
 # COMMAND ----------
 
@@ -532,17 +521,12 @@ Data Tables:
     - Source: OpenNEM (github.com/opennem/opennem)
 
 Base Environment (for workspace-wide use):
-  Option 1 - Volume:
     Wheel: {ARTIFACTS_VOLUME}/nemweb_datasource-*.whl
     Spec:  {ARTIFACTS_VOLUME}/environment.yml
 
-  Option 2 - Workspace (if Volume doesn't work):
-    Wheel: /Workspace{repo_root}/artifacts/nemweb_datasource-*.whl
-    Spec:  /Workspace{repo_root}/artifacts/environment.yml
-
   To set as workspace default:
   1. Settings > Compute > Base environments > Manage
-  2. Create new environment, select environment.yml from either location
+  2. Create new environment, select environment.yml
   3. Click star icon to set as default
 
 Next Steps:

@@ -105,7 +105,10 @@ notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext(
 repo_root = str(os.path.dirname(os.path.dirname(notebook_path)))
 sys.path.insert(0, f"/Workspace{repo_root}/src")
 
-from nemweb_utils import fetch_nemweb_current, parse_nemweb_csv
+from nemweb_utils import fetch_nemweb_current, parse_nemweb_csv, get_version
+
+# Output version for debugging
+print(f"nemweb_utils version: {get_version()}")
 
 # Quick test
 test_data = fetch_nemweb_current(
@@ -170,11 +173,12 @@ class NemwebReader(DataSourceReader):
 
         SOLUTION 1.2b: Fetch and parse NEMWEB data
         """
-        # Fetch recent data from CURRENT folder
+        # Fetch live data from NEMWEB CURRENT folder
         data = fetch_nemweb_current(
             table="DISPATCHREGIONSUM",
             region=partition.region,
-            max_files=6
+            max_files=6,
+            debug=True  # Print debug info to help troubleshoot
         )
 
         # Convert to tuples matching schema

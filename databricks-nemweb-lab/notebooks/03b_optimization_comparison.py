@@ -1,18 +1,24 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Exercise 3b: Data Layout Optimization Comparison
+# MAGIC # Exercise 3: Delta Lake Optimization Techniques
 # MAGIC
-# MAGIC **Time:** 10 minutes
+# MAGIC **Time:** 15 minutes
 # MAGIC
-# MAGIC In this exercise, you'll compare two Delta Lake optimization approaches for time-series data:
-# MAGIC 1. **Liquid Clustering** - Modern approach (DBR 13.3+)
+# MAGIC This is the **final main exercise** of the lab. You'll master Delta Lake optimization
+# MAGIC techniques that are critical for production workloads on Databricks.
+# MAGIC
+# MAGIC ## Topics Covered
+# MAGIC 1. **Liquid Clustering** - Modern data layout (DBR 13.3+)
 # MAGIC 2. **Generated Columns + Partitioning** - Traditional approach
+# MAGIC 3. **OPTIMIZE** - File compaction and data layout
+# MAGIC 4. **VACUUM** - Storage cleanup
+# MAGIC 5. **Predictive Optimization** - Automatic maintenance
 # MAGIC
 # MAGIC ## Learning Objectives
 # MAGIC 1. Understand when to use liquid clustering vs. partitioning
 # MAGIC 2. Implement both approaches for the same dataset
 # MAGIC 3. Measure query performance differences
-# MAGIC 4. Apply the right optimization for NEMWEB time-series data
+# MAGIC 4. Configure Delta table maintenance for production
 # MAGIC
 # MAGIC ## Prerequisites
 # MAGIC - Run **00_setup_and_validation.py** first to pre-load NEMWEB data
@@ -413,6 +419,63 @@ summary_df.show(truncate=False)
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Part 5: Delta Table Maintenance
+# MAGIC
+# MAGIC ### OPTIMIZE - File Compaction
+# MAGIC
+# MAGIC The `OPTIMIZE` command compacts small files and applies clustering/Z-ORDER.
+# MAGIC
+# MAGIC ```sql
+# MAGIC -- Basic OPTIMIZE (compacts files, applies clustering if defined)
+# MAGIC OPTIMIZE nemweb_liquid_clustered
+# MAGIC
+# MAGIC -- OPTIMIZE with Z-ORDER (legacy alternative to liquid clustering)
+# MAGIC OPTIMIZE nemweb_legacy ZORDER BY (settlement_date, region_id)
+# MAGIC ```
+# MAGIC
+# MAGIC **When to use:**
+# MAGIC - After batch ingestion jobs
+# MAGIC - When you see many small files (check with DESCRIBE DETAIL)
+# MAGIC - For liquid clustered tables: data gets better organized with each OPTIMIZE
+# MAGIC
+# MAGIC ### VACUUM - Storage Cleanup
+# MAGIC
+# MAGIC The `VACUUM` command removes old files that are no longer referenced.
+# MAGIC
+# MAGIC ```sql
+# MAGIC -- Remove files older than 7 days (default retention)
+# MAGIC VACUUM nemweb_liquid_clustered
+# MAGIC
+# MAGIC -- Remove files older than 24 hours (requires safety check override)
+# MAGIC VACUUM nemweb_liquid_clustered RETAIN 24 HOURS
+# MAGIC ```
+# MAGIC
+# MAGIC **Important:** VACUUM deletes time travel history! Set retention carefully.
+# MAGIC
+# MAGIC ### Predictive Optimization (Unity Catalog)
+# MAGIC
+# MAGIC For managed tables in Unity Catalog, enable automatic OPTIMIZE and VACUUM:
+# MAGIC
+# MAGIC ```sql
+# MAGIC -- Enable at catalog level
+# MAGIC ALTER CATALOG my_catalog SET (
+# MAGIC   'predictiveOptimization' = 'ENABLE'
+# MAGIC )
+# MAGIC
+# MAGIC -- Or enable per table
+# MAGIC ALTER TABLE nemweb_bronze SET TBLPROPERTIES (
+# MAGIC   'delta.enablePredictiveOptimization' = 'true'
+# MAGIC )
+# MAGIC ```
+# MAGIC
+# MAGIC **Benefits:**
+# MAGIC - Automatic file compaction when needed
+# MAGIC - No manual OPTIMIZE scheduling required
+# MAGIC - Intelligent scheduling based on table activity
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Key Takeaways
 # MAGIC
 # MAGIC | Scenario | Recommended Approach | Why |
@@ -422,12 +485,22 @@ summary_df.show(truncate=False)
 # MAGIC | High cardinality keys | **Liquid Clustering** | Avoids small file problem |
 # MAGIC | Strict partition pruning | **Partitioning** | Explicit boundaries |
 # MAGIC | Existing partitioned tables | Keep or migrate | Migration requires rewrite |
+# MAGIC | Production maintenance | **Predictive Optimization** | Automatic OPTIMIZE/VACUUM |
+# MAGIC
+# MAGIC ### Delta Optimization Checklist
+# MAGIC
+# MAGIC - [ ] Choose data layout strategy (liquid clustering preferred for new tables)
+# MAGIC - [ ] Run OPTIMIZE after batch loads or enable predictive optimization
+# MAGIC - [ ] Configure VACUUM retention based on time travel needs
+# MAGIC - [ ] Monitor file count and sizes with DESCRIBE DETAIL
 # MAGIC
 # MAGIC ## References
 # MAGIC
 # MAGIC - [Liquid Clustering](https://docs.databricks.com/en/delta/clustering.html)
 # MAGIC - [Generated Columns](https://docs.databricks.com/en/delta/generated-columns.html)
-# MAGIC - [Partitioning Best Practices](https://docs.databricks.com/en/tables/partitions.html)
+# MAGIC - [OPTIMIZE Command](https://docs.databricks.com/en/delta/optimize.html)
+# MAGIC - [VACUUM Command](https://docs.databricks.com/en/delta/vacuum.html)
+# MAGIC - [Predictive Optimization](https://docs.databricks.com/en/optimizations/predictive-optimization.html)
 
 # COMMAND ----------
 
