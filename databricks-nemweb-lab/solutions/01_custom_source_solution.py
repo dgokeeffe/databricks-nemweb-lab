@@ -333,9 +333,9 @@ validate_implementation()
 
 # COMMAND ----------
 
-# Configuration
-CATALOG = dbutils.widgets.get("catalog") if "catalog" in [w.name for w in dbutils.widgets.getAll()] else "workspace"
-SCHEMA = dbutils.widgets.get("schema") if "schema" in [w.name for w in dbutils.widgets.getAll()] else "nemweb_lab"
+# Configuration (widgets created at top of notebook)
+CATALOG = dbutils.widgets.get("catalog")
+SCHEMA = dbutils.widgets.get("schema")
 
 CHECKPOINT_TABLE = f"{CATALOG}.{SCHEMA}.nemweb_checkpoints"
 DATA_TABLE = f"{CATALOG}.{SCHEMA}.nemweb_current"
