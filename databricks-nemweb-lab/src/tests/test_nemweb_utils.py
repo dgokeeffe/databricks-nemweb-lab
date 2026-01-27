@@ -23,6 +23,7 @@ from nemweb_utils import (
     _build_nemweb_url,
     _get_sample_data,
     _convert_value,
+    _to_python_scalar,
     parse_nemweb_csv,
     get_nemweb_schema,
     list_available_tables,
@@ -469,6 +470,104 @@ class TestTableToFolderMapping:
         for table, folder in TABLE_TO_FOLDER.items():
             assert isinstance(table, str)
             assert isinstance(folder, str)
+
+
+class TestToPythonScalar:
+    """Tests for _to_python_scalar shim function."""
+
+    def test_none_returns_none(self):
+        """None should pass through."""
+        assert _to_python_scalar(None) is None
+
+    def test_datetime_passes_through(self):
+        """datetime.datetime should pass through."""
+        dt = datetime(2025, 1, 1, 12, 0, 0)
+        result = _to_python_scalar(dt)
+        assert isinstance(result, datetime)
+        assert result == dt
+
+    def test_tz_aware_datetime_converted_to_naive(self):
+        """tz-aware datetime should be converted to naive UTC."""
+        import datetime as dt
+        tz_aware = datetime(2025, 1, 1, 12, 0, 0, tzinfo=dt.timezone.utc)
+        result = _to_python_scalar(tz_aware)
+        assert isinstance(result, datetime)
+        assert result.tzinfo is None
+        assert result == datetime(2025, 1, 1, 12, 0, 0)
+
+    def test_pandas_timestamp_converted(self):
+        """pandas.Timestamp should be converted to datetime.datetime."""
+        try:
+            import pandas as pd
+            ts = pd.Timestamp("2025-01-01 12:00:00")
+            result = _to_python_scalar(ts)
+            assert isinstance(result, datetime)
+            assert result == datetime(2025, 1, 1, 12, 0, 0)
+        except ImportError:
+            pytest.skip("pandas not available")
+
+    def test_pandas_nat_returns_none(self):
+        """pandas.NaT should return None."""
+        try:
+            import pandas as pd
+            result = _to_python_scalar(pd.NaT)
+            assert result is None
+        except ImportError:
+            pytest.skip("pandas not available")
+
+    def test_numpy_datetime64_converted(self):
+        """numpy.datetime64 should be converted to datetime.datetime."""
+        try:
+            import numpy as np
+            dt64 = np.datetime64("2025-01-01T12:00:00")
+            result = _to_python_scalar(dt64)
+            assert isinstance(result, datetime)
+            assert result == datetime(2025, 1, 1, 12, 0, 0)
+        except ImportError:
+            pytest.skip("numpy not available")
+
+    def test_numpy_nat_returns_none(self):
+        """numpy.datetime64('NaT') should return None."""
+        try:
+            import numpy as np
+            nat = np.datetime64("NaT")
+            result = _to_python_scalar(nat)
+            assert result is None
+        except ImportError:
+            pytest.skip("numpy not available")
+
+    def test_numpy_int_converted(self):
+        """numpy integer should be converted to Python int."""
+        try:
+            import numpy as np
+            nint = np.int64(42)
+            result = _to_python_scalar(nint)
+            assert isinstance(result, int)
+            assert result == 42
+        except ImportError:
+            pytest.skip("numpy not available")
+
+    def test_numpy_float_converted(self):
+        """numpy float should be converted to Python float."""
+        try:
+            import numpy as np
+            nfloat = np.float64(3.14)
+            result = _to_python_scalar(nfloat)
+            assert isinstance(result, float)
+            assert result == 3.14
+        except ImportError:
+            pytest.skip("numpy not available")
+
+    def test_numpy_bool_converted(self):
+        """numpy bool should be converted to Python bool."""
+        try:
+            import numpy as np
+            nbool = np.bool_(True)
+            result = _to_python_scalar(nbool)
+            assert isinstance(result, bool)
+            assert result is True
+        except ImportError:
+            pytest.skip("numpy not available")
 
 
 if __name__ == "__main__":

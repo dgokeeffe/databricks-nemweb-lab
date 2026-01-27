@@ -221,10 +221,6 @@ check_schema()
 import sys
 import os
 
-notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
-repo_root = str(os.path.dirname(os.path.dirname(notebook_path)))
-sys.path.insert(0, f"/Workspace{repo_root}/src")
-
 from nemweb_utils import fetch_nemweb_current, parse_nemweb_csv
 
 # Quick test - these helpers handle HTTP fetching and CSV parsing

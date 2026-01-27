@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Version for debugging - increment when making changes
-__version__ = "2.10.5"
+__version__ = "2.10.9"
 
 # Debug file path - check this in DBFS after errors
 DEBUG_LOG_PATH = "/tmp/nemweb_debug.log"
@@ -540,6 +540,69 @@ def _debug_log(msg: str) -> None:
         pass
 
 
+def _validate_tuple_types(tuple_values: list, schema: "StructType") -> tuple:
+    """
+    Final validation pass to ensure all tuple values match schema types.
+    
+    CRITICAL: Spark's timestamp converter requires datetime.datetime objects.
+    This function ensures no invalid types slip through.
+    
+    Returns:
+        Validated tuple with all timestamp fields guaranteed to be datetime.datetime or None
+    """
+    from pyspark.sql.types import TimestampType
+    validated = []
+    
+    for field, value in zip(schema.fields, tuple_values):
+        if isinstance(field.dataType, TimestampType):
+            # Timestamp must be datetime.datetime or None - NO EXCEPTIONS
+            if value is None:
+                validated.append(None)
+            elif isinstance(value, datetime):
+                # Already correct type - ensure tz-naive
+                if value.tzinfo is not None:
+                    import datetime as dt
+                    validated.append(value.astimezone(dt.timezone.utc).replace(tzinfo=None))
+                else:
+                    validated.append(value)
+            else:
+                # NOT a datetime - try aggressive conversion, then set to None if it fails
+                converted_value = None
+                try:
+                    # Try parsing as string first
+                    if isinstance(value, str):
+                        converted_value = _parse_timestamp_value(value)
+                    else:
+                        # Try coercion
+                        converted_value = _to_python_scalar(value, TimestampType())
+                    
+                    # Verify conversion succeeded
+                    if converted_value is not None and isinstance(converted_value, datetime):
+                        # Ensure tz-naive
+                        if converted_value.tzinfo is not None:
+                            import datetime as dt
+                            converted_value = converted_value.astimezone(dt.timezone.utc).replace(tzinfo=None)
+                        validated.append(converted_value)
+                    else:
+                        # Conversion failed - set to None
+                        validated.append(None)
+                except Exception:
+                    # Any exception during conversion - set to None
+                    validated.append(None)
+        else:
+            validated.append(value)
+    
+    # FINAL ASSERTION: Verify all timestamp fields are datetime or None
+    result = tuple(validated)
+    for field, val in zip(schema.fields, result):
+        if isinstance(field.dataType, TimestampType):
+            if val is not None and not isinstance(val, datetime):
+                # This should never happen, but if it does, return None to skip row
+                return None
+    
+    return result
+
+
 def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
     """
     Parse NEMWEB data and yield tuples matching the Spark schema.
@@ -573,33 +636,121 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
                 if raw_value is None or raw_value == "":
                     values.append(None)
                 else:
-                    # Convert to appropriate type
-                    converted = _convert_value(raw_value, field_types[name])
-                    # Coerce to pure Python type (handles pandas/numpy edge cases)
-                    coerced = _to_python_scalar(converted, field_types[name])
-                    
-                    # CRITICAL: Validate timestamp types - Spark requires datetime.datetime or None
+                    # Match Arrow datasource approach: parse timestamp FIRST, then coerce
                     from pyspark.sql.types import TimestampType
                     if isinstance(field_types[name], TimestampType):
-                        if coerced is not None and not isinstance(coerced, datetime):
-                            # Skip this row if timestamp is invalid (especially for required fields like SETTLEMENTDATE)
-                            _debug_log(f"Row {row_num}: Invalid timestamp for {name}: {type(coerced).__name__} = {coerced}")
+                        # Parse timestamp first (matches Arrow datasource _row_to_tuple logic)
+                        parsed_ts = _parse_timestamp_value(raw_value)
+                        # Skip rows with unparseable timestamps for required fields
+                        if parsed_ts is None and name == "SETTLEMENTDATE":
+                            _debug_log(f"Row {row_num}: Skipping row - SETTLEMENTDATE cannot be parsed")
                             skip_row = True
                             break
-                    
-                    values.append(coerced)
+                        # Ensure it's a pure Python datetime (coerce any non-native types)
+                        final_val = _to_python_scalar(parsed_ts, TimestampType())
+                        # Final check - must be datetime or None
+                        if final_val is not None and not isinstance(final_val, datetime):
+                            _debug_log(f"Row {row_num}: CRITICAL - {name} coercion failed: {type(final_val).__name__}")
+                            # Set to None instead of skipping (Spark handles None)
+                            final_val = None
+                        values.append(final_val)
+                    elif isinstance(field_types[name], DoubleType):
+                        # Convert to float and ensure it's Python float (not numpy)
+                        converted = _convert_value(raw_value, field_types[name])
+                        final_val = _to_python_scalar(converted, field_types[name])
+                        values.append(final_val)
+                    else:
+                        # Coerce all other values to ensure pure Python types
+                        converted = _convert_value(raw_value, field_types[name])
+                        final_val = _to_python_scalar(converted, field_types[name])
+                        values.append(final_val)
             
             # Skip rows with invalid timestamps
             if skip_row:
                 continue
 
-            result = tuple(values)
+            # FINAL VALIDATION: Double-check all timestamp fields are datetime or None
+            # This is a critical safeguard to prevent Spark assertion errors
+            from pyspark.sql.types import TimestampType
+            for idx, (field, value) in enumerate(zip(schema.fields, values)):
+                if isinstance(field.dataType, TimestampType):
+                    if value is not None:
+                        # Force conversion if somehow still not a datetime
+                        if not isinstance(value, datetime):
+                            _debug_log(f"Row {row_num}: CRITICAL - Field {field.name} (idx {idx}) is {type(value).__name__}, not datetime! Value: {value}")
+                            # Try one more conversion attempt
+                            try:
+                                if isinstance(value, str):
+                                    value = _parse_timestamp_value(value)
+                                else:
+                                    value = _to_python_scalar(value, TimestampType())
+                                # If still not datetime after conversion, set to None (Spark can handle None)
+                                if value is not None and not isinstance(value, datetime):
+                                    _debug_log(f"Row {row_num}: Failed to convert {field.name} to datetime, setting to None")
+                                    value = None
+                            except Exception as e:
+                                _debug_log(f"Row {row_num}: Exception converting {field.name}: {e}, setting to None")
+                                value = None
+                        # CRITICAL: Update the value in the list (ensure tz-naive)
+                        if value is not None and isinstance(value, datetime):
+                            if value.tzinfo is not None:
+                                import datetime as dt
+                                value = value.astimezone(dt.timezone.utc).replace(tzinfo=None)
+                        values[idx] = value
+                    else:
+                        # Ensure None is explicitly set
+                        values[idx] = None
+            
+            # Skip row if final validation failed
+            if skip_row:
+                continue
 
-            # Debug first few rows
+            # Final tuple validation - ensures all types are correct
+            validated_tuple = _validate_tuple_types(values, schema)
+            if validated_tuple is None:
+                _debug_log(f"Row {row_num}: Tuple validation failed, skipping")
+                continue
+
+            # CRITICAL FINAL CHECK: Verify tuple one more time before yielding
+            # This is the absolute last chance to catch any invalid values
+            from pyspark.sql.types import TimestampType
+            final_values = []
+            skip_final = False
+            
+            for idx, (field, val) in enumerate(zip(schema.fields, validated_tuple)):
+                if isinstance(field.dataType, TimestampType):
+                    if val is None:
+                        final_values.append(None)
+                    elif isinstance(val, datetime):
+                        # Ensure tz-naive
+                        if val.tzinfo is not None:
+                            import datetime as dt
+                            final_values.append(val.astimezone(dt.timezone.utc).replace(tzinfo=None))
+                        else:
+                            final_values.append(val)
+                    else:
+                        # CRITICAL: This should NEVER happen, but if it does, set to None
+                        _debug_log(f"Row {row_num}: FATAL ERROR - timestamp {field.name} is {type(val).__name__}, not datetime! Value: {val}")
+                        _debug_log(f"Row {row_num}: This indicates a bug - all validation failed. Setting to None.")
+                        final_values.append(None)  # Set to None instead of skipping
+                else:
+                    final_values.append(val)
+            
+            validated_tuple = tuple(final_values)
+
+            # Debug first few rows - verify timestamp types
             if row_num <= 3:
-                _debug_log(f"Row {row_num} tuple[0]: type={type(result[0]).__name__}, val={result[0]}")
+                ts_field_idx = None
+                for idx, field in enumerate(schema.fields):
+                    if isinstance(field.dataType, TimestampType):
+                        ts_field_idx = idx
+                        break
+                if ts_field_idx is not None:
+                    ts_val = validated_tuple[ts_field_idx]
+                    ts_type = type(ts_val).__name__ if ts_val is not None else "None"
+                    _debug_log(f"Row {row_num} timestamp[{ts_field_idx}]: type={ts_type}, val={ts_val}")
 
-            yield result
+            yield validated_tuple
 
         except Exception as e:
             _debug_log(f"ROW {row_num} ERROR: {e}")
@@ -799,35 +950,71 @@ def _convert_value(value, spark_type):
         return str_value
 
 
-def _parse_timestamp_value(ts_str: str) -> datetime:
+def _parse_timestamp_value(ts_str: str) -> Optional[datetime]:
     """
     Parse timestamp string to tz-naive datetime.datetime.
+    
+    This matches the logic from nemweb_datasource_arrow.py _parse_timestamp()
+    to ensure consistent behavior.
 
     Returns None only if parsing completely fails.
     Spark requires datetime.datetime objects for TimestampType columns.
     
     Handles both slash and dash formats, and strips quotes/whitespace.
     """
-    if not ts_str:
+    if ts_str is None:
         return None
 
-    # Strip whitespace and quotes (csv.reader should handle quotes, but be defensive)
-    ts_str = str(ts_str).strip().strip('"').strip("'").strip()
-    if not ts_str:
+    # Handle string input (most common case from CSV parsing)
+    if isinstance(ts_str, str):
+        ts_str = ts_str.strip().strip('"').strip("'").strip()
+        if not ts_str:
+            return None
+
+        formats = [
+            "%Y/%m/%d %H:%M:%S",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y/%m/%d %H:%M",
+            "%Y-%m-%d %H:%M",
+        ]
+
+        for fmt in formats:
+            try:
+                return datetime.strptime(ts_str, fmt)
+            except ValueError:
+                continue
+
         return None
 
-    formats = [
-        "%Y/%m/%d %H:%M:%S",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y/%m/%d %H:%M",
-        "%Y-%m-%d %H:%M",
-    ]
+    # Handle datetime.datetime (ensure tz-naive)
+    if isinstance(ts_str, datetime):
+        if ts_str.tzinfo is not None:
+            import datetime as dt
+            return ts_str.astimezone(dt.timezone.utc).replace(tzinfo=None)
+        return ts_str
 
-    for fmt in formats:
-        try:
-            return datetime.strptime(ts_str, fmt)
-        except ValueError:
-            continue
+    # Handle other types that might sneak through
+    try:
+        import pandas as pd
+        if isinstance(ts_str, pd.Timestamp):
+            if pd.isna(ts_str):
+                return None
+            if ts_str.tz is not None:
+                ts_str = ts_str.tz_convert(None)
+            return ts_str.to_pydatetime()
+    except (ImportError, AttributeError):
+        pass
+
+    try:
+        import numpy as np
+        if isinstance(ts_str, np.datetime64):
+            import pandas as pd
+            ts = pd.to_datetime(ts_str, utc=False)
+            if pd.isna(ts):
+                return None
+            return ts.to_pydatetime()
+    except (ImportError, AttributeError):
+        pass
 
     return None
 
