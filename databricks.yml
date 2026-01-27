@@ -34,8 +34,8 @@ sync:
   include:
     - "databricks-nemweb-lab/src/*.py"
     - "databricks-nemweb-lab/src/pipeline/**"
-    - "databricks-nemweb-lab/notebooks/*.ipynb"  # Use .ipynb format for notebooks
-    - "databricks-nemweb-lab/solutions/*.ipynb"  # Use .ipynb format for solutions
+    - "databricks-nemweb-lab/notebooks/**"
+    - "databricks-nemweb-lab/solutions/**"
     - "databricks-nemweb-lab/artifacts/**"
   exclude:
     - "databricks-nemweb-lab/src/.venv/**"
@@ -44,8 +44,6 @@ sync:
     - "databricks-nemweb-lab/src/build/**"
     - "databricks-nemweb-lab/src/dist/**"
     - "databricks-nemweb-lab/src/tests/**"
-    - "databricks-nemweb-lab/notebooks/*.py"  # Exclude .py files - use .ipynb instead
-    - "databricks-nemweb-lab/solutions/*.py"  # Exclude .py files - use .ipynb instead
     - "**/.pytest_cache/**"
     - "**/__pycache__/**"
 
@@ -80,7 +78,7 @@ resources:
       tasks:
         - task_key: setup_validation
           notebook_task:
-            notebook_path: ./databricks-nemweb-lab/notebooks/00_setup_and_validation.ipynb
+            notebook_path: ./databricks-nemweb-lab/notebooks/00_setup_and_validation.py
             base_parameters:
               catalog: "${var.catalog}"
               schema: "${var.schema}"
@@ -90,25 +88,25 @@ resources:
           depends_on:
             - task_key: setup_validation
           notebook_task:
-            notebook_path: ./databricks-nemweb-lab/notebooks/01_custom_source_exercise.ipynb
+            notebook_path: ./databricks-nemweb-lab/notebooks/01_custom_source_exercise.py
 
         - task_key: lakeflow_pipeline
           depends_on:
             - task_key: custom_source
           notebook_task:
-            notebook_path: ./databricks-nemweb-lab/notebooks/02_lakeflow_pipeline.ipynb
+            notebook_path: ./databricks-nemweb-lab/notebooks/02_lakeflow_pipeline.py
 
         - task_key: cluster_sizing
           depends_on:
             - task_key: lakeflow_pipeline
           notebook_task:
-            notebook_path: ./databricks-nemweb-lab/notebooks/03a_cluster_sizing_exercise.ipynb
+            notebook_path: ./databricks-nemweb-lab/notebooks/03a_cluster_sizing_exercise.py
 
         - task_key: optimization_comparison
           depends_on:
             - task_key: lakeflow_pipeline
           notebook_task:
-            notebook_path: ./databricks-nemweb-lab/notebooks/03b_optimization_comparison.ipynb
+            notebook_path: ./databricks-nemweb-lab/notebooks/03b_optimization_comparison.py
             base_parameters:
               catalog: "${var.catalog}"
               schema: "${var.schema}"
@@ -127,7 +125,7 @@ resources:
       tasks:
         - task_key: setup_validation
           notebook_task:
-            notebook_path: ./databricks-nemweb-lab/notebooks/00_setup_and_validation.ipynb
+            notebook_path: ./databricks-nemweb-lab/notebooks/00_setup_and_validation.py
             base_parameters:
               catalog: "${var.catalog}"
               schema: "${var.schema}"

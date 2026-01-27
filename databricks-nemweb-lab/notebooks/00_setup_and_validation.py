@@ -136,46 +136,97 @@ except urllib.error.URLError as e:
 # MAGIC ## 5. Install Lab Package
 # MAGIC
 # MAGIC The wheel is pre-built and deployed with the bundle to the artifacts folder.
+# MAGIC If the source version doesn't match the wheel version, it will automatically
+# MAGIC rebuild from source to ensure you're using the latest code.
 
 # COMMAND ----------
 
 import os
 import glob
+import re
+import subprocess
+from pathlib import Path
 
 # Get workspace paths
 notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
 repo_root = os.path.dirname(os.path.dirname(notebook_path))
 workspace_root = f"/Workspace{repo_root}"
 artifacts_path = f"{workspace_root}/artifacts"
+src_path = f"{workspace_root}/src"
 
 print(f"Repository: {workspace_root}")
 print(f"Artifacts:  {artifacts_path}")
+
+# Read version from pyproject.toml
+pyproject_path = f"{src_path}/pyproject.toml"
+source_version = None
+if os.path.exists(pyproject_path):
+    with open(pyproject_path, 'r') as f:
+        content = f.read()
+        match = re.search(r'^version\s*=\s*["\']([^"\']+)["\']', content, re.MULTILINE)
+        if match:
+            source_version = match.group(1)
+            print(f"Source version: {source_version}")
 
 # Find pre-built wheel from artifacts (deployed with bundle)
 wheel_pattern = f"{artifacts_path}/nemweb_datasource-*.whl"
 wheels = glob.glob(wheel_pattern)
 
+should_rebuild = False
+latest_wheel = None
+
 if wheels:
     # Use latest version (sorted by name)
     latest_wheel = sorted(wheels)[-1]
+    wheel_name = os.path.basename(latest_wheel)
+    
+    # Extract version from wheel filename (e.g., nemweb_datasource-2.10.5-py3-none-any.whl)
+    wheel_version_match = re.search(r'nemweb_datasource-([\d.]+)-', wheel_name)
+    wheel_version = wheel_version_match.group(1) if wheel_version_match else None
+    
     print(f"Found pre-built wheel: {latest_wheel}")
+    if wheel_version:
+        print(f"Wheel version: {wheel_version}")
+    
+    # Rebuild if source version doesn't match wheel version
+    if source_version and wheel_version and source_version != wheel_version:
+        print(f"Version mismatch: source={source_version}, wheel={wheel_version}")
+        print("Rebuilding from source to get latest version...")
+        should_rebuild = True
+    elif not os.path.exists(latest_wheel):
+        print("Wheel file not found, rebuilding...")
+        should_rebuild = True
 else:
-    # Fallback: try to build if not found (for local development)
-    import subprocess
-    print("Pre-built wheel not found, building from source...")
-    src_path = f"{workspace_root}/src"
+    print("No pre-built wheel found")
+    should_rebuild = True
+
+# Build from source if needed
+if should_rebuild:
+    print("Building wheel from source...")
     result = subprocess.run(
-        f"cd {src_path} && uv build --wheel --out-dir dist",
+        f"cd {src_path} && rm -f dist/*.whl && uv build --wheel --out-dir dist",
         shell=True, capture_output=True, text=True
     )
     if result.returncode != 0:
         print(f"Build errors: {result.stderr}")
         raise RuntimeError("Wheel build failed")
-    wheels = glob.glob(f"{src_path}/dist/nemweb_datasource-*.whl")
-    if not wheels:
+    
+    # Copy to artifacts for consistency
+    dist_wheels = glob.glob(f"{src_path}/dist/nemweb_datasource-*.whl")
+    if not dist_wheels:
         raise FileNotFoundError("No wheel found after build")
-    latest_wheel = sorted(wheels)[-1]
-    print(f"Built: {os.path.basename(latest_wheel)}")
+    
+    latest_wheel = sorted(dist_wheels)[-1]
+    wheel_name = os.path.basename(latest_wheel)
+    
+    # Copy to artifacts directory
+    os.makedirs(artifacts_path, exist_ok=True)
+    artifacts_wheel = f"{artifacts_path}/{wheel_name}"
+    import shutil
+    shutil.copy2(latest_wheel, artifacts_wheel)
+    latest_wheel = artifacts_wheel
+    
+    print(f"Built and copied: {wheel_name}")
 
 # COMMAND ----------
 
@@ -263,13 +314,13 @@ import os
 import shutil
 import glob
 
-# Get paths
+# Get paths (reuse variables from earlier section)
 notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
 repo_root = os.path.dirname(os.path.dirname(notebook_path))
 workspace_root = f"/Workspace{repo_root}"
 artifacts_path = f"{workspace_root}/artifacts"
 
-# Find the pre-built wheel from bundle deployment
+# Find the wheel (should already be built/copied in section 5)
 wheel_pattern = f"{artifacts_path}/nemweb_datasource-*.whl"
 wheels = glob.glob(wheel_pattern)
 
@@ -299,7 +350,7 @@ dependencies:
     print(f"  Spec:  {env_path}")
 else:
     print(f"Warning: No wheel found matching {wheel_pattern}")
-    print("Run 'databricks bundle deploy' to deploy the wheel.")
+    print("The wheel should have been built in section 5 above.")
 
 # COMMAND ----------
 
