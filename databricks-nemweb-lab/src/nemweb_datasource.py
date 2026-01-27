@@ -1,5 +1,22 @@
 """
-NEMWEB Custom PySpark Data Source
+NEMWEB Custom PySpark Data Source (DEPRECATED)
+
+WARNING: This module is deprecated. Use nemweb_datasource_arrow instead.
+
+    # Old (deprecated):
+    from nemweb_datasource import NemwebDataSource
+    spark.dataSource.register(NemwebDataSource)
+    df = spark.read.format("nemweb").load()
+
+    # New (recommended):
+    from nemweb_datasource_arrow import NemwebArrowDataSource
+    spark.dataSource.register(NemwebArrowDataSource)
+    df = spark.read.format("nemweb_arrow").load()
+
+The Arrow version uses PyArrow RecordBatch for zero-copy transfer to Spark,
+avoiding datetime serialization issues with Spark Connect (Serverless).
+
+---
 
 This module implements a custom data source for AEMO NEMWEB electricity market data
 using Databricks' Python Data Source API (GA in DBR 15.4+/Spark 4.0).
@@ -53,6 +70,17 @@ except ImportError:
     from nemweb_ingest import list_downloaded_files
 
 logger = logging.getLogger(__name__)
+
+# Deprecation warning at import time
+import warnings
+warnings.warn(
+    "nemweb_datasource is deprecated. Use nemweb_datasource_arrow instead:\n"
+    "  from nemweb_datasource_arrow import NemwebArrowDataSource\n"
+    "  spark.dataSource.register(NemwebArrowDataSource)\n"
+    "  df = spark.read.format('nemweb_arrow').load()",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 
 def update_checkpoint(

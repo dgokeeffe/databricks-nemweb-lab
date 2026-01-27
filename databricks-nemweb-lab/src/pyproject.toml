@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nemweb-datasource"
-version = "2.9.0"
+version = "2.10.0"
 description = "Custom PySpark data source for AEMO NEMWEB electricity market data"
 requires-python = ">=3.10"
 dependencies = []  # pyspark is provided by the runtime
@@ -19,7 +19,6 @@ local = [
 # Use py_modules for flat layout (modules directly in src/)
 [tool.setuptools]
 py-modules = [
-    "nemweb_datasource",
     "nemweb_datasource_arrow",
     "nemweb_utils",
     "nemweb_ingest",
