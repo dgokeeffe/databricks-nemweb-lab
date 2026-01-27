@@ -6,16 +6,16 @@
 -- =============================================================================
 
 -- Create metrics schema if preferred (optional - can use trading schema)
-CREATE SCHEMA IF NOT EXISTS agldata.metrics;
+CREATE SCHEMA IF NOT EXISTS workspace.nemweb_lab;
 
 -- Create the metric view with YAML syntax
-CREATE OR REPLACE VIEW agldata.trading.mv_nem_price_metrics
+CREATE OR REPLACE VIEW workspace.nemweb_lab.mv_nem_price_metrics
 WITH METRICS
 LANGUAGE YAML
 AS $$
 version: 1.1
 comment: "NEM wholesale electricity analytics - standardised measures for price, volatility, and demand across Genie, SQL, dashboards, and Power BI"
-source: agldata.trading.curated_nem_prices
+source: workspace.nemweb_lab.curated_nem_prices
 
 dimensions:
   - name: region_id
@@ -91,7 +91,7 @@ SELECT
   avg_price,
   price_volatility,
   peak_demand_mw
-FROM agldata.trading.mv_nem_price_metrics
+FROM workspace.nemweb_lab.mv_nem_price_metrics
 WHERE date >= current_date() - INTERVAL 7 DAYS
 ORDER BY avg_price DESC;
 
@@ -101,7 +101,7 @@ SELECT
   hour_of_day,
   avg_price,
   avg_demand_mw
-FROM agldata.trading.mv_nem_price_metrics
+FROM workspace.nemweb_lab.mv_nem_price_metrics
 WHERE date >= current_date() - INTERVAL 7 DAYS
 ORDER BY hour_of_day;
 
@@ -112,6 +112,6 @@ SELECT
   avg_price,
   price_volatility,
   peak_demand_mw
-FROM agldata.trading.mv_nem_price_metrics
+FROM workspace.nemweb_lab.mv_nem_price_metrics
 WHERE date >= current_date() - INTERVAL 7 DAYS
 ORDER BY region_id, is_peak DESC;

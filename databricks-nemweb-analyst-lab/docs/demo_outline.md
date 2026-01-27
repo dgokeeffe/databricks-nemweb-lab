@@ -9,8 +9,8 @@
 ## Pre-Demo Checklist
 
 - [ ] Databricks workspace accessible
-- [ ] `agldata.trading.curated_nem_prices` table loaded with sample data
-- [ ] `agldata.trading.mv_nem_price_metrics` metric view created
+- [ ] `workspace.nemweb_lab.curated_nem_prices` table loaded with sample data
+- [ ] `workspace.nemweb_lab.mv_nem_price_metrics` metric view created
 - [ ] Genie space "AGL Trading Analytics - NEM" configured
 - [ ] SQL Editor open with sample queries ready
 - [ ] (Optional) Power BI Desktop with Databricks connection tested
@@ -47,7 +47,7 @@ Mental model: "Databricks behind the scenes; Excel/Power BI + AI at the front"
 
 ### Demo Actions
 
-1. **Catalog Explorer**: Navigate to `agldata.trading.curated_nem_prices`
+1. **Catalog Explorer**: Navigate to `workspace.nemweb_lab.curated_nem_prices`
 2. **Show schema**: Click through columns, highlight comments
    - `interval_start` - 5-minute NEM dispatch intervals
    - `region_id` - NSW1, QLD1, VIC1, SA1, TAS1
@@ -63,7 +63,7 @@ SELECT
   COUNT(*) AS rows,
   AVG(rrp) AS avg_price,
   AVG(demand_mw) AS avg_demand
-FROM agldata.trading.curated_nem_prices
+FROM workspace.nemweb_lab.curated_nem_prices
 WHERE date >= current_date() - INTERVAL 7 DAYS
 GROUP BY region_id;
 ```
@@ -120,7 +120,7 @@ GROUP BY region_id;
 1. **Open SQL Editor**: Ensure `agldata` catalog is selected
 2. **First prompt** (use Assistant):
 
-   > "Write a SQL query over agldata.trading.curated_nem_prices that, for the last 7 days, returns average price, price volatility, and peak demand by region, ordered by average price descending"
+   > "Write a SQL query over workspace.nemweb_lab.curated_nem_prices that, for the last 7 days, returns average price, price volatility, and peak demand by region, ordered by average price descending"
 
 3. **Review generated SQL**: Talk through the query structure
 4. **Run the query**: Show results table
@@ -150,7 +150,7 @@ GROUP BY region_id;
 
 ### Demo Actions
 
-1. **Catalog Explorer**: Navigate to `agldata.trading.mv_nem_price_metrics`
+1. **Catalog Explorer**: Navigate to `workspace.nemweb_lab.mv_nem_price_metrics`
 2. **Show definition**: Point out measures and dimensions
 3. **Run metric view query**:
 
@@ -161,7 +161,7 @@ SELECT
   avg_price,
   price_volatility,
   peak_demand_mw
-FROM agldata.trading.mv_nem_price_metrics
+FROM workspace.nemweb_lab.mv_nem_price_metrics
 WHERE date >= current_date() - INTERVAL 7 DAYS
 ORDER BY avg_price DESC;
 ```

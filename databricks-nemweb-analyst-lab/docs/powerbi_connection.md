@@ -175,7 +175,7 @@ with sql.connect(
     access_token="<pat>"
 ) as connection:
     df = pd.read_sql(
-        "SELECT * FROM agldata.trading.mv_nem_price_metrics WHERE date >= current_date() - INTERVAL 7 DAYS",
+        "SELECT * FROM workspace.nemweb_lab.mv_nem_price_metrics WHERE date >= current_date() - INTERVAL 7 DAYS",
         connection
     )
 ```

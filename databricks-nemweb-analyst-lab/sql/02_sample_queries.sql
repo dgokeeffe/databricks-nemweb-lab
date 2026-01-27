@@ -14,7 +14,7 @@ SELECT
   ROUND(STDDEV(rrp), 2) AS price_volatility,
   ROUND(AVG(demand_mw), 0) AS avg_demand_mw,
   ROUND(MAX(demand_mw), 0) AS peak_demand_mw
-FROM agldata.trading.curated_nem_prices
+FROM workspace.nemweb_lab.curated_nem_prices
 WHERE date >= current_date() - INTERVAL 7 DAYS
 GROUP BY region_id
 ORDER BY avg_price DESC;
@@ -30,7 +30,7 @@ SELECT
   ROUND(AVG(rrp), 2) AS daily_avg_price,
   ROUND(MAX(rrp), 2) AS daily_peak_price,
   COUNT(*) AS intervals
-FROM agldata.trading.curated_nem_prices
+FROM workspace.nemweb_lab.curated_nem_prices
 WHERE date >= current_date() - INTERVAL 30 DAYS
 GROUP BY date, region_id
 ORDER BY date, region_id;
@@ -46,7 +46,7 @@ SELECT
   ROUND(demand_mw, 0) AS demand_mw,
   ROUND(rrp, 2) AS price_aud_mwh,
   is_peak
-FROM agldata.trading.curated_nem_prices
+FROM workspace.nemweb_lab.curated_nem_prices
 WHERE region_id = 'VIC1'
   AND date >= current_date() - INTERVAL 7 DAYS
 ORDER BY demand_mw DESC
@@ -64,7 +64,7 @@ SELECT
   ROUND(STDDEV(rrp), 2) AS price_volatility,
   ROUND(AVG(demand_mw), 0) AS avg_demand_mw,
   COUNT(*) AS interval_count
-FROM agldata.trading.curated_nem_prices
+FROM workspace.nemweb_lab.curated_nem_prices
 WHERE date >= current_date() - INTERVAL 7 DAYS
 GROUP BY region_id, is_peak
 ORDER BY region_id, is_peak DESC;
@@ -80,7 +80,7 @@ SELECT
   ROUND(AVG(rrp), 2) AS avg_price,
   ROUND(STDDEV(rrp), 2) AS price_volatility,
   ROUND(MAX(demand_mw), 0) AS peak_demand_mw
-FROM agldata.trading.curated_nem_prices
+FROM workspace.nemweb_lab.curated_nem_prices
 WHERE date >= current_date() - INTERVAL 7 DAYS
   AND region_id IN ('NSW1', 'QLD1')
 GROUP BY date, region_id
@@ -96,7 +96,7 @@ SELECT
   region_id,
   ROUND(AVG(rrp), 2) AS avg_price,
   ROUND(AVG(demand_mw), 0) AS avg_demand_mw
-FROM agldata.trading.curated_nem_prices
+FROM workspace.nemweb_lab.curated_nem_prices
 WHERE date >= current_date() - INTERVAL 7 DAYS
 GROUP BY HOUR(interval_start), region_id
 ORDER BY hour_of_day, region_id;
@@ -113,7 +113,7 @@ SELECT
   ROUND(AVG(rrp), 2) AS avg_spike_price,
   ROUND(MAX(rrp), 2) AS max_spike_price,
   ROUND(AVG(demand_mw), 0) AS avg_demand_during_spikes
-FROM agldata.trading.curated_nem_prices
+FROM workspace.nemweb_lab.curated_nem_prices
 WHERE rrp > 300
   AND date >= current_date() - INTERVAL 30 DAYS
 GROUP BY date, region_id
@@ -131,7 +131,7 @@ SELECT
   ROUND(MAX(rrp) - MIN(rrp), 2) AS price_range,
   ROUND(MAX(rrp), 2) AS max_price,
   ROUND(MIN(rrp), 2) AS min_price
-FROM agldata.trading.curated_nem_prices
+FROM workspace.nemweb_lab.curated_nem_prices
 WHERE date >= current_date() - INTERVAL 30 DAYS
 GROUP BY region_id
 ORDER BY price_volatility DESC;

@@ -15,10 +15,10 @@ This guide covers configuring the AI/BI Genie space for the AGL Trading Analytic
 
 Add the following tables/views to the Genie space:
 
-1. **agldata.trading.curated_nem_prices**
+1. **workspace.nemweb_lab.curated_nem_prices**
    - Primary source table for NEM price and demand data
 
-2. **agldata.trading.mv_nem_price_metrics** (if metric views are supported in your workspace)
+2. **workspace.nemweb_lab.mv_nem_price_metrics** (if metric views are supported in your workspace)
    - Semantic layer with pre-defined measures
 
 ## Table Instructions (Context for Genie)
@@ -111,8 +111,8 @@ Configure these example questions to guide users:
 
 4. **Add Datasets**:
    - Click "Add Dataset" or "Add Table"
-   - Select `agldata.trading.curated_nem_prices`
-   - Repeat for `agldata.trading.mv_nem_price_metrics`
+   - Select `workspace.nemweb_lab.curated_nem_prices`
+   - Repeat for `workspace.nemweb_lab.mv_nem_price_metrics`
 
 5. **Add Table Instructions**:
    - For each dataset, add the context instructions above

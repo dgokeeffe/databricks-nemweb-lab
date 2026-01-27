@@ -116,7 +116,7 @@ Unity Catalog governs access, lineage, and documentation. [docs.databricks](http
 
 **Name**
 
-- `agldata.trading.curated_nem_prices`
+- `workspace.nemweb_lab.curated_nem_prices`
 
 **Purpose**
 
@@ -145,7 +145,7 @@ Unity Catalog governs access, lineage, and documentation. [docs.databricks](http
 
 **Name**
 
-- `agldata.trading.mv_nem_price_metrics`
+- `workspace.nemweb_lab.mv_nem_price_metrics`
 
 **Purpose**
 
@@ -175,8 +175,8 @@ Metric view must be implemented as a proper Unity Catalog metric view. [communit
 
 **Datasets attached**
 
-- `agldata.trading.curated_nem_prices`
-- `agldata.trading.mv_nem_price_metrics` (if supported) [learn.microsoft](https://learn.microsoft.com/en-us/azure/databricks/metric-views/)
+- `workspace.nemweb_lab.curated_nem_prices`
+- `workspace.nemweb_lab.mv_nem_price_metrics` (if supported) [learn.microsoft](https://learn.microsoft.com/en-us/azure/databricks/metric-views/)
 
 **Seeded example questions**: [databricks](https://www.databricks.com/product/business-intelligence/ai-bi-genie)
 
@@ -233,7 +233,7 @@ Outcome: mental model = “Databricks behind the scenes; Excel/Power BI + AI at 
 
 Demo:
 
-1. In Catalog Explorer, open `agldata.trading.curated_nem_prices`. [datacamp](https://www.datacamp.com/tutorial/databricks-unity-catalog-guide)
+1. In Catalog Explorer, open `workspace.nemweb_lab.curated_nem_prices`. [datacamp](https://www.datacamp.com/tutorial/databricks-unity-catalog-guide)
 2. Show schema and sample rows; highlight:
    - `interval_start`, `date`, `region_id`, `rrp`, `demand_mw`, `is_peak`. [aemo.com](https://www.aemo.com.au/energy-systems/electricity/national-electricity-market-nem/data-nem/market-management-system-mms-data)
 3. Explain this is cleaned NEMWeb‑style data they already use in some form, but now:
@@ -248,7 +248,7 @@ Demo:
      COUNT(*) AS rows,
      AVG(rrp) AS avg_price,
      AVG(demand_mw) AS avg_demand
-   FROM agldata.trading.curated_nem_prices
+   FROM workspace.nemweb_lab.curated_nem_prices
    WHERE date >= current_date() - INTERVAL 7 DAYS
    GROUP BY region_id;
    ```
@@ -292,7 +292,7 @@ Demo (SQL Editor):
 1. Open SQL Editor; ensure `agldata` is selected.
 2. Use Assistant with prompt:
 
-   > “Write a SQL query over `agldata.trading.curated_nem_prices` that, for the last 7 days, returns average price, price volatility, and peak demand by region, ordered by average price descending.”
+   > “Write a SQL query over `workspace.nemweb_lab.curated_nem_prices` that, for the last 7 days, returns average price, price volatility, and peak demand by region, ordered by average price descending.”
 
 3. Review SQL, run, show table of results. [learn.microsoft](https://learn.microsoft.com/en-us/azure/databricks/exercises/databricks-assistant-faq)
 4. Refinement prompt:
@@ -320,7 +320,7 @@ Notebook use is optional; keep this section to SQL only for time and simplicity.
 
 1. Describe metric views in 1–2 sentences:
    - “Metric views define measures (like avg price, volatility, peak demand) and dimensions once, so everyone reuses the same definitions in SQL, dashboards, Genie, and Power BI.” [advancinganalytics.co](https://www.advancinganalytics.co.uk/blog/simplifying-analytics-with-metric-views-in-databricks)
-2. Show `agldata.trading.mv_nem_price_metrics` in Catalog.
+2. Show `workspace.nemweb_lab.mv_nem_price_metrics` in Catalog.
 3. Run example:
 
    ```sql
@@ -330,7 +330,7 @@ Notebook use is optional; keep this section to SQL only for time and simplicity.
      avg_price,
      price_volatility,
      peak_demand_mw
-   FROM agldata.trading.mv_nem_price_metrics
+   FROM workspace.nemweb_lab.mv_nem_price_metrics
    WHERE date >= current_date() - INTERVAL 7 DAYS
    ORDER BY avg_price DESC;
    ```
@@ -406,12 +406,12 @@ Propose next steps:
 When you feed this PRD to Claude Code, ask it to generate:
 
 1. **SQL DDL and example queries**
-   - `CREATE TABLE agldata.trading.curated_nem_prices (...)`
+   - `CREATE TABLE workspace.nemweb_lab.curated_nem_prices (...)`
    - Example analyses used in the workshop:
      - 7‑day regional summary.
      - Metric view query snippets.
 2. **Metric view definition**
-   - SQL (or appropriate config) for `agldata.trading.mv_nem_price_metrics` with measures/dimensions and comments. [learn.microsoft](https://learn.microsoft.com/en-us/azure/databricks/metric-views/)
+   - SQL (or appropriate config) for `workspace.nemweb_lab.mv_nem_price_metrics` with measures/dimensions and comments. [learn.microsoft](https://learn.microsoft.com/en-us/azure/databricks/metric-views/)
 3. **Notebook skeleton**
    - Optional: PySpark notebook with cells for:
      - Loading `curated_nem_prices`.
