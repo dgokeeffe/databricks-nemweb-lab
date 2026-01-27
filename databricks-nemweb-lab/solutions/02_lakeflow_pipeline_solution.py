@@ -231,7 +231,7 @@ validate_pipeline_logic()
 pipeline_config = {
     "name": "nemweb-ingestion-pipeline",
     "target": "nemweb_data",
-    "catalog": "main",
+    "catalog": "workspace",  # Change to your catalog
     "development": False,
     "continuous": False,
     "channel": "CURRENT",
