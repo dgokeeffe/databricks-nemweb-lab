@@ -1,10 +1,10 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Exercise 2: Lakeflow Declarative Pipeline
+# MAGIC # Exercise 2: Lakeflow Spark Declarative Pipeline
 # MAGIC
 # MAGIC **Time:** 10 minutes
 # MAGIC
-# MAGIC In this exercise, you'll create a Lakeflow Declarative Pipeline that processes
+# MAGIC In this exercise, you'll create a Lakeflow Spark Declarative Pipeline that processes
 # MAGIC the NEMWEB data loaded in Exercise 00.
 # MAGIC
 # MAGIC ## Learning Objectives
@@ -19,7 +19,7 @@
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Background: Lakeflow Declarative Pipelines
+# MAGIC ## Background: Lakeflow Spark Declarative Pipelines
 # MAGIC
 # MAGIC Lakeflow (formerly DLT) provides:
 # MAGIC - **Declarative ETL**: Define "what" not "how"

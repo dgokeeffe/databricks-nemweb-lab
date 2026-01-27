@@ -30,12 +30,32 @@ from datetime import datetime, timedelta
 
 # Create widgets with defaults - these can be overridden by job parameters
 dbutils.widgets.text("catalog", "workspace", "Catalog Name")
+
+# COMMAND ----------
+
 dbutils.widgets.text("schema", "nemweb_lab", "Schema Name")
+
+# COMMAND ----------
+
 dbutils.widgets.text("table", "nemweb_dispatch_regionsum", "Dispatch Regionsum Table Name")
+
+# COMMAND ----------
+
 dbutils.widgets.text("volume", "raw_files", "Volume Name")
+
+# COMMAND ----------
+
 dbutils.widgets.text("days_history", "180", "Days of History")
+
+# COMMAND ----------
+
 dbutils.widgets.dropdown("force_reload", "false", ["true", "false"], "Force Reload")
+
+# COMMAND ----------
+
 dbutils.widgets.dropdown("include_current", "false", ["true", "false"], "Include Recent (CURRENT)")
+
+# COMMAND ----------
 
 # Get configuration from widgets
 CATALOG = dbutils.widgets.get("catalog")

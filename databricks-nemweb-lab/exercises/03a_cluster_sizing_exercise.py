@@ -19,7 +19,7 @@
 # MAGIC > **Counterintuitive truth:** A larger cluster often costs LESS than a smaller one
 # MAGIC > because it finishes faster. You pay for DBU × time, not just DBU rate.
 # MAGIC
-# MAGIC > **Photon rule:** Enable Photon for most workloads. The 2-3x speedup typically
+# MAGIC > **Photon rule:** Enable Photon for most workloads. The 2-5x speedup typically
 # MAGIC > outweighs the ~2x DBU premium. You save money by finishing faster.
 
 # COMMAND ----------

@@ -53,7 +53,12 @@ from databricks.sdk.runtime import spark
 
 # Configuration widgets
 dbutils.widgets.text("catalog", "workspace", "Catalog Name")
+
+# COMMAND ----------
+
 dbutils.widgets.text("schema", "nemweb_lab", "Schema Name")
+
+# COMMAND ----------
 
 CATALOG = dbutils.widgets.get("catalog")
 SCHEMA = dbutils.widgets.get("schema")

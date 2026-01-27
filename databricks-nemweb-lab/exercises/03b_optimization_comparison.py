@@ -48,9 +48,20 @@ import time
 
 # Create widgets with defaults matching setup notebook
 dbutils.widgets.text("catalog", "workspace", "Catalog Name")
+
+# COMMAND ----------
+
 dbutils.widgets.text("schema", "nemweb_lab", "Source Schema")
+
+# COMMAND ----------
+
 dbutils.widgets.text("table", "nemweb_raw", "Source Table")
+
+# COMMAND ----------
+
 dbutils.widgets.text("target_schema", "nemweb_optimization_lab", "Target Schema")
+
+# COMMAND ----------
 
 # Get configuration from widgets
 SOURCE_CATALOG = dbutils.widgets.get("catalog")
