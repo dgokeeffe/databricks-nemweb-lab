@@ -1,6 +1,6 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Exercise 3: Cluster Right-Sizing Analysis
+# MAGIC # Exercise 3a: Cluster Right-Sizing Analysis
 # MAGIC
 # MAGIC **Time:** 15 minutes
 # MAGIC
@@ -9,24 +9,42 @@
 # MAGIC
 # MAGIC ## Learning Objectives
 # MAGIC 1. Interpret Spark UI metrics (CPU%, memory%, task duration)
-# MAGIC 2. Calculate required compute from data volume → partitions → cores
-# MAGIC 3. Select appropriate instance types based on workload
-# MAGIC 4. Set autoscaling boundaries based on patterns
-# MAGIC 5. Estimate DBU costs for different configurations
+# MAGIC 2. Understand why **bigger clusters can cost less** (faster completion)
+# MAGIC 3. Learn when to enable **Photon** (almost always!)
+# MAGIC 4. Select appropriate Azure instance types
+# MAGIC 5. Configure autoscaling for cost optimization
 # MAGIC
-# MAGIC ## The Problem
+# MAGIC ## Key Insights
 # MAGIC
-# MAGIC Many engineers size clusters by intuition ("let's try 16 cores"). This leads to:
-# MAGIC - 50-300% over-provisioning (wasted DBUs)
-# MAGIC - Undersized memory causing spill to disk
-# MAGIC - Wide autoscaling (min=1, max=32) allowing runaway costs
+# MAGIC > **Counterintuitive truth:** A larger cluster often costs LESS than a smaller one
+# MAGIC > because it finishes faster. You pay for DBU × time, not just DBU rate.
+# MAGIC
+# MAGIC > **Photon rule:** Enable Photon for most workloads. The 2-3x speedup typically
+# MAGIC > outweighs the ~2x DBU premium. You save money by finishing faster.
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## The Cost Paradox: Bigger Can Be Cheaper
+# MAGIC
+# MAGIC Consider this example:
+# MAGIC
+# MAGIC | Scenario | Workers | DBU/hr | Duration | Total DBUs | Total Cost |
+# MAGIC |----------|---------|--------|----------|------------|------------|
+# MAGIC | Small cluster | 2 | 2.0 | 60 min | 2.0 | $0.30 |
+# MAGIC | Large cluster | 8 | 8.0 | 12 min | 1.6 | **$0.24** |
+# MAGIC
+# MAGIC **The large cluster is 20% cheaper!** Why?
+# MAGIC - Cost = DBU rate × time
+# MAGIC - 4x the workers but 5x faster = net savings
+# MAGIC - Plus: faster SLA, happier users, freed resources
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## Scenario: NEMWEB Production Pipeline
 # MAGIC
-# MAGIC You're deploying the NEMWEB pipeline to production. Requirements:
+# MAGIC You're deploying the NEMWEB pipeline to production on **Azure Databricks**.
 # MAGIC
 # MAGIC | Metric | Value |
 # MAGIC |--------|-------|
@@ -34,7 +52,7 @@
 # MAGIC | Historical load | ~50-100 MB (260k rows) |
 # MAGIC | Daily incremental | ~1 MB (1,440 rows per region × 5 regions) |
 # MAGIC | SLA | Process within 15 minutes of data availability |
-# MAGIC | Budget | Minimize DBU spend while meeting SLA |
+# MAGIC | Budget | Minimize total cost while meeting SLA |
 
 # COMMAND ----------
 
@@ -116,134 +134,224 @@ print(f"Cores with overhead: {cores_with_overhead}")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Part 3: Instance Type Selection
+# MAGIC ## Part 3: Azure Instance Type Selection
 # MAGIC
-# MAGIC ### AWS Instance Comparison (example)
+# MAGIC ### Azure VM Instance Comparison
 # MAGIC
-# MAGIC | Instance | vCPUs | Memory | DBU/hr | Use Case |
-# MAGIC |----------|-------|--------|--------|----------|
-# MAGIC | m5.xlarge | 4 | 16 GB | 0.75 | General purpose |
-# MAGIC | m5.2xlarge | 8 | 32 GB | 1.5 | General purpose |
-# MAGIC | c5.2xlarge | 8 | 16 GB | 1.0 | CPU-intensive |
-# MAGIC | r5.2xlarge | 8 | 64 GB | 2.0 | Memory-intensive |
+# MAGIC | Instance | vCPUs | Memory | DBU/hr | Photon DBU/hr | Use Case |
+# MAGIC |----------|-------|--------|--------|---------------|----------|
+# MAGIC | Standard_DS3_v2 | 4 | 14 GB | 0.75 | 1.5 | General purpose |
+# MAGIC | Standard_DS4_v2 | 8 | 28 GB | 1.5 | 3.0 | General purpose |
+# MAGIC | Standard_DS5_v2 | 16 | 56 GB | 3.0 | 6.0 | General purpose |
+# MAGIC | Standard_F8s_v2 | 8 | 16 GB | 1.0 | 2.0 | CPU-intensive |
+# MAGIC | Standard_E8s_v3 | 8 | 64 GB | 2.0 | 4.0 | Memory-intensive |
 # MAGIC
-# MAGIC ### TODO 3.3: Select appropriate instance type
+# MAGIC ### Photon: When to Enable?
+# MAGIC
+# MAGIC **Short answer: Almost always.**
+# MAGIC
+# MAGIC | Workload Type | Photon Speedup | Worth the 2x DBU? |
+# MAGIC |---------------|----------------|-------------------|
+# MAGIC | SQL/DataFrame transforms | 2-4x | **Yes** |
+# MAGIC | Aggregations & joins | 2-5x | **Yes** |
+# MAGIC | File parsing (Parquet/Delta) | 2-3x | **Yes** |
+# MAGIC | Python UDFs only | 1x (no benefit) | No |
+# MAGIC | ML model training | 1x (no benefit) | No |
+# MAGIC
+# MAGIC > **Rule of thumb:** If your workload is >50% SQL/DataFrame operations,
+# MAGIC > enable Photon. The speedup pays for the DBU premium.
 
 # COMMAND ----------
 
-# Workload characteristics assessment
-# Score 1-5 for each dimension
-
 # TODO 3.3: Rate your workload (1=low, 5=high)
+# NEMWEB pipeline characteristics:
+# - Reads CSV/ZIP files (I/O bound initially)
+# - Transforms with SQL/DataFrame (Photon helps!)
+# - Aggregations for gold layer (Photon helps!)
 
-cpu_intensity = None  # HTTP parsing, CSV processing → typically 2-3
-memory_intensity = None  # Wide tables, large aggregations → depends on transforms
-io_intensity = None  # Network calls to NEMWEB → typically 3-4
+cpu_intensity = None  # CSV parsing → typically 2-3
+memory_intensity = None  # Wide tables, aggregations → typically 2-3
+io_intensity = None  # Network/disk I/O → typically 3-4
+sql_dataframe_pct = None  # % of work that's SQL/DataFrame → typically 70-80%
 
-# Decision matrix
-def recommend_instance_type(cpu: int, memory: int, io: int) -> str:
-    """
-    Recommend instance type based on workload characteristics.
-    """
+# Decision matrix for Azure
+def recommend_azure_instance(cpu: int, memory: int, io: int) -> str:
+    """Recommend Azure instance type based on workload characteristics."""
     if memory >= 4:
-        return "r5.xlarge (memory-optimized) - Large aggregations/wide tables"
+        return "Standard_E8s_v3 (memory-optimized) - Large aggregations/wide tables"
     elif cpu >= 4:
-        return "c5.xlarge (CPU-optimized) - Heavy computation"
+        return "Standard_F8s_v2 (CPU-optimized) - Heavy computation"
     else:
-        return "m5.xlarge (general purpose) - Balanced workload"
+        return "Standard_DS4_v2 (general purpose) - Balanced workload"
+
+def recommend_photon(sql_pct: int) -> str:
+    """Recommend whether to enable Photon."""
+    if sql_pct >= 50:
+        return "YES - Enable Photon (SQL/DataFrame work will benefit from 2-4x speedup)"
+    else:
+        return "NO - Disable Photon (mostly Python UDFs or ML, no speedup)"
 
 # Uncomment after setting scores:
-# recommendation = recommend_instance_type(cpu_intensity, memory_intensity, io_intensity)
-# print(f"Recommended instance: {recommendation}")
+# print(f"Instance: {recommend_azure_instance(cpu_intensity, memory_intensity, io_intensity)}")
+# print(f"Photon: {recommend_photon(sql_dataframe_pct)}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Part 4: Autoscaling Configuration
+# MAGIC ## Part 4: The "Bigger is Cheaper" Calculation
+# MAGIC
+# MAGIC Let's prove that a larger cluster can cost less.
+# MAGIC
+# MAGIC ### TODO 3.4: Compare small vs large cluster costs
+
+# COMMAND ----------
+
+# Scenario: Process 100 MB of data with 10 tasks, 45 seconds each
+
+# Small cluster: 2 workers × Standard_DS4_v2 (8 cores each = 16 total cores)
+# Large cluster: 4 workers × Standard_DS4_v2 (8 cores each = 32 total cores)
+
+TASKS = 10
+TASK_DURATION_SEC = 45
+DBU_PER_WORKER_HOUR = 1.5  # Standard_DS4_v2
+DBU_RATE = 0.15  # $/DBU for Jobs compute
+
+# Small cluster calculation
+small_workers = 2
+small_cores = small_workers * 8
+# With 16 cores, we can run all 10 tasks in parallel, completing in ~45 seconds
+small_duration_min = (TASKS * TASK_DURATION_SEC) / small_cores / 60
+small_dbus = small_workers * DBU_PER_WORKER_HOUR * (small_duration_min / 60)
+small_cost = small_dbus * DBU_RATE
+
+print("=== Small Cluster (2 workers) ===")
+print(f"Duration: {small_duration_min:.1f} minutes")
+print(f"DBUs consumed: {small_dbus:.2f}")
+print(f"Cost: ${small_cost:.4f}")
+
+# Large cluster calculation
+large_workers = 4
+large_cores = large_workers * 8
+large_duration_min = (TASKS * TASK_DURATION_SEC) / large_cores / 60
+large_dbus = large_workers * DBU_PER_WORKER_HOUR * (large_duration_min / 60)
+large_cost = large_dbus * DBU_RATE
+
+print("\n=== Large Cluster (4 workers) ===")
+print(f"Duration: {large_duration_min:.1f} minutes")
+print(f"DBUs consumed: {large_dbus:.2f}")
+print(f"Cost: ${large_cost:.4f}")
+
+# Comparison
+print("\n=== Comparison ===")
+print(f"Duration savings: {small_duration_min - large_duration_min:.1f} minutes faster")
+print(f"Cost difference: ${small_cost - large_cost:.4f}")
+if large_cost < small_cost:
+    savings_pct = (1 - large_cost/small_cost) * 100
+    print(f"Large cluster is {savings_pct:.0f}% CHEAPER!")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Part 5: Photon Cost/Benefit Analysis
+# MAGIC
+# MAGIC ### TODO 3.5: Calculate when Photon pays for itself
+
+# COMMAND ----------
+
+# Without Photon
+base_dbu_rate = 1.5  # Standard_DS4_v2
+base_duration_min = 10  # minutes
+base_dbus = 2 * base_dbu_rate * (base_duration_min / 60)  # 2 workers
+base_cost = base_dbus * DBU_RATE
+
+print("=== Without Photon ===")
+print(f"Duration: {base_duration_min} minutes")
+print(f"DBUs: {base_dbus:.2f}")
+print(f"Cost: ${base_cost:.4f}")
+
+# With Photon (2x DBU rate, but typically 2-3x faster)
+photon_dbu_rate = 3.0  # 2x the base rate
+photon_speedup = 2.5  # Conservative estimate
+photon_duration_min = base_duration_min / photon_speedup
+photon_dbus = 2 * photon_dbu_rate * (photon_duration_min / 60)
+photon_cost = photon_dbus * DBU_RATE
+
+print("\n=== With Photon (2.5x speedup) ===")
+print(f"Duration: {photon_duration_min:.1f} minutes")
+print(f"DBUs: {photon_dbus:.2f}")
+print(f"Cost: ${photon_cost:.4f}")
+
+# Break-even analysis
+print("\n=== Break-Even Analysis ===")
+breakeven_speedup = 2.0  # At 2x speedup, cost is equal
+print(f"Break-even speedup: {breakeven_speedup}x")
+print(f"Typical Photon speedup: 2-4x")
+if photon_cost < base_cost:
+    savings = base_cost - photon_cost
+    print(f"Photon SAVES ${savings:.4f} per run ({(1-photon_cost/base_cost)*100:.0f}% cheaper)")
+else:
+    extra = photon_cost - base_cost
+    print(f"Photon costs ${extra:.4f} more per run")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Part 6: Autoscaling Configuration
 # MAGIC
 # MAGIC ### Common Autoscaling Mistakes
 # MAGIC
-# MAGIC 1. **Too wide**: min=1, max=32 allows runaway costs
-# MAGIC 2. **Too narrow**: min=max=8 prevents optimization
-# MAGIC 3. **Wrong baseline**: min too low causes slow startup
+# MAGIC 1. **Too wide**: min=1, max=32 → unpredictable costs
+# MAGIC 2. **Too narrow**: min=max=8 → no flexibility
+# MAGIC 3. **min too low**: Slow cold start when cluster scales from 1
 # MAGIC
-# MAGIC ### TODO 3.4: Configure autoscaling bounds
+# MAGIC ### Best Practice: Set min based on typical load, max based on SLA
 
 # COMMAND ----------
 
 # Workload patterns (from analysis)
-TYPICAL_LOAD_CORES = 4  # Daily incremental
-PEAK_LOAD_CORES = 8  # Historical backfill or catch-up
+TYPICAL_LOAD_CORES = 8   # Daily incremental
+PEAK_LOAD_CORES = 16     # Historical backfill or catch-up
 
-# TODO 3.4: Set autoscaling bounds
+# TODO 3.6: Set autoscaling bounds
 # Rules:
-# - min_workers: Handle typical load with ~70% utilization
-# - max_workers: Handle peak load without exceeding budget
+# - min_workers: Handle typical load at ~70% utilization
+# - max_workers: Handle peak load within SLA
 # - Always round up to whole workers
 
-CORES_PER_WORKER = 4  # For m5.xlarge
+CORES_PER_WORKER = 8  # For Standard_DS4_v2
 
 min_workers = None  # YOUR CALCULATION: ceil(typical_cores / cores_per_worker)
 max_workers = None  # YOUR CALCULATION: ceil(peak_cores / cores_per_worker)
 
-print(f"Autoscaling: min={min_workers}, max={max_workers} workers")
-print(f"Core range: {min_workers * CORES_PER_WORKER} - {max_workers * CORES_PER_WORKER}")
+# Uncomment after calculation:
+# print(f"Autoscaling: min={min_workers}, max={max_workers} workers")
+# print(f"Core range: {min_workers * CORES_PER_WORKER} - {max_workers * CORES_PER_WORKER}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Part 5: Cost Estimation (5 minutes)
+# MAGIC ## Part 7: Final Configuration
 # MAGIC
-# MAGIC ### TODO 3.5: Calculate DBU costs
+# MAGIC ### TODO 3.7: Complete the cluster configuration
 
 # COMMAND ----------
 
-# Pricing (example - varies by cloud and commitment)
-DBU_RATE_JOBS = 0.15  # $/DBU for Jobs compute
-DBU_RATE_INTERACTIVE = 0.55  # $/DBU for All-Purpose compute
-DBU_PER_HOUR_M5_XLARGE = 0.75
-
-# Usage patterns
-RUNS_PER_DAY = 24  # Hourly incremental
-AVG_RUN_DURATION_HOURS = 0.1  # 6 minutes
-WORKERS_TYPICAL = 2
-
-# TODO 3.5a: Calculate daily DBU consumption
-# Formula: workers × DBU_per_hour × run_duration × runs_per_day
-
-daily_dbus = None  # YOUR CALCULATION HERE
-monthly_dbus = None  # daily_dbus × 30
-
-print(f"Daily DBUs: {daily_dbus}")
-print(f"Monthly DBUs: {monthly_dbus}")
-
-# TODO 3.5b: Calculate monthly cost
-monthly_cost_jobs = None  # monthly_dbus × DBU_RATE_JOBS
-monthly_cost_interactive = None  # monthly_dbus × DBU_RATE_INTERACTIVE
-
-print(f"Monthly cost (Jobs): ${monthly_cost_jobs:.2f}")
-print(f"Monthly cost (Interactive): ${monthly_cost_interactive:.2f}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Part 6: Final Configuration
-# MAGIC
-# MAGIC ### TODO 3.6: Complete the cluster configuration
-
-# COMMAND ----------
+import json
 
 cluster_config = {
     "cluster_name": "nemweb-pipeline-prod",
     "spark_version": "15.4.x-scala2.12",  # DBR 15.4 for Python Data Source API
 
-    # TODO 3.6: Fill in based on your analysis
-    "node_type_id": None,  # e.g., "m5.xlarge"
-    "driver_node_type_id": None,  # Usually same as worker
+    # Azure VM type
+    "node_type_id": "Standard_DS4_v2",  # 8 vCPUs, 28 GB RAM
+    "driver_node_type_id": "Standard_DS4_v2",
+
+    # Photon - ENABLE for SQL/DataFrame workloads
+    "runtime_engine": "PHOTON",  # or "STANDARD" for Python UDF-heavy work
 
     "autoscale": {
-        "min_workers": None,  # From Part 4
-        "max_workers": None,  # From Part 4
+        "min_workers": 1,  # TODO: Set based on your calculation
+        "max_workers": 4,  # TODO: Set based on your calculation
     },
 
     # Autotermination for cost control
@@ -251,9 +359,15 @@ cluster_config = {
 
     # Spark configuration
     "spark_conf": {
-        # Optimize for your workload
         "spark.sql.shuffle.partitions": "auto",
         "spark.databricks.adaptive.autoOptimizeShuffle.enabled": "true",
+    },
+
+    # Azure-specific settings
+    "azure_attributes": {
+        "availability": "ON_DEMAND_AZURE",
+        "first_on_demand": 1,  # Driver always on-demand
+        "spot_bid_max_price": -1,  # Use spot for workers (cost savings)
     },
 
     # Tags for cost tracking
@@ -264,58 +378,45 @@ cluster_config = {
     }
 }
 
-import json
 print("Cluster Configuration:")
 print(json.dumps(cluster_config, indent=2))
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Validation Checklist
+# MAGIC ## Summary: Key Takeaways
 # MAGIC
-# MAGIC Before deploying to production, verify:
+# MAGIC ### 1. Bigger Clusters Can Cost Less
+# MAGIC - Cost = DBU rate × time
+# MAGIC - 2x workers finishing in half the time = same cost
+# MAGIC - Often faster than linear → actual savings
 # MAGIC
-# MAGIC - [ ] Instance type matches workload profile (CPU/memory/IO)
-# MAGIC - [ ] Min workers handle typical load at 70% utilization
-# MAGIC - [ ] Max workers handle peak load within budget
-# MAGIC - [ ] Autotermination configured to prevent idle costs
-# MAGIC - [ ] Spark shuffle partitions set appropriately
-# MAGIC - [ ] Cost tags configured for chargeback
+# MAGIC ### 2. Enable Photon for Most Workloads
+# MAGIC - 2x DBU cost but 2-4x speedup = net savings
+# MAGIC - Only disable for pure Python UDF or ML workloads
+# MAGIC - Default to ON, measure, then decide
+# MAGIC
+# MAGIC ### 3. Azure Instance Selection
+# MAGIC
+# MAGIC | Workload | Instance | When to Use |
+# MAGIC |----------|----------|-------------|
+# MAGIC | General | Standard_DS4_v2 | Default choice |
+# MAGIC | CPU-heavy | Standard_F8s_v2 | Heavy transforms |
+# MAGIC | Memory-heavy | Standard_E8s_v3 | Large aggregations |
+# MAGIC
+# MAGIC ### 4. Autoscaling Strategy
+# MAGIC - **min**: Typical load at 70% utilization
+# MAGIC - **max**: Peak load within SLA
+# MAGIC - Use spot instances for workers (30-60% savings)
+# MAGIC
+# MAGIC ### 5. Measure, Don't Guess
+# MAGIC - Run test workload, check Spark UI
+# MAGIC - Calculate: total_task_time / target_duration = required_parallelism
+# MAGIC - Add 20% overhead for startup/coordination
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Summary
+# MAGIC ## Next Steps
 # MAGIC
-# MAGIC ### Key Sizing Methodology
-# MAGIC
-# MAGIC 1. **Measure first**: Run test workload, capture Spark UI metrics
-# MAGIC 2. **Calculate cores**: total_task_time / target_duration × 1.2 (overhead)
-# MAGIC 3. **Select instance**: Match CPU/memory/IO profile to instance family
-# MAGIC 4. **Set autoscaling**: Based on typical vs. peak patterns
-# MAGIC 5. **Estimate costs**: DBUs × rate × expected usage
-# MAGIC
-# MAGIC ### Avoid These Mistakes
-# MAGIC
-# MAGIC - Intuition-based sizing without metrics
-# MAGIC - Memory-optimized instances for CPU-bound work
-# MAGIC - min=1, max=32 autoscaling (too wide)
-# MAGIC - Forgetting driver sizing for large collects
-# MAGIC - Not setting autotermination
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Congratulations!
-# MAGIC
-# MAGIC You've completed the Databricks NEMWEB Lab. You now know how to:
-# MAGIC
-# MAGIC 1. Build custom PySpark data sources using Python Data Source API
-# MAGIC 2. Integrate custom sources into Lakeflow Declarative Pipelines
-# MAGIC 3. Make data-driven cluster sizing decisions
-# MAGIC
-# MAGIC ### Next Steps
-# MAGIC
-# MAGIC - Review solutions in the `solutions/` folder
-# MAGIC - Extend the data source with additional NEMWEB tables
-# MAGIC - Apply this methodology to your production workloads
+# MAGIC Proceed to **Exercise 3b** for optimization techniques (liquid clustering, ANALYZE TABLE).
