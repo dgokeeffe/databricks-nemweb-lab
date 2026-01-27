@@ -158,7 +158,7 @@ databricks bundle deploy --target prod
 ### External References
 
 - [Python Data Source API](https://docs.databricks.com/en/pyspark/datasources.html)
-- [Lakeflow Declarative Pipelines](https://docs.databricks.com/en/delta-live-tables/)
+- [Lakeflow Spark Declarative Pipelines](https://docs.databricks.com/en/delta-live-tables/)
 - [Liquid Clustering](https://docs.databricks.com/en/delta/clustering.html)
 - [Databricks Apps](https://docs.databricks.com/en/dev-tools/databricks-apps/)
 - [MMS Data Model Report](https://nemweb.com.au/Reports/Current/MMSDataModelReport/Electricity/Electricity%20Data%20Model%20Report.htm)

@@ -36,5 +36,5 @@
       }
     }
   ],
-  "_comment": "Lakeflow Declarative Pipeline configuration for NEMWEB data ingestion. Replace ${user} with your username."
+  "_comment": "Lakeflow Spark Declarative Pipeline configuration for NEMWEB data ingestion. Replace ${user} with your username."
 }

@@ -1,6 +1,6 @@
 # NEMWEB Production Pipelines
 
-This folder contains production-ready Lakeflow Declarative Pipeline definitions, isolated from exercise notebooks and transformation code.
+This folder contains production-ready Lakeflow Spark Declarative Pipeline definitions, isolated from exercise notebooks and transformation code.
 
 ## Contents
 
