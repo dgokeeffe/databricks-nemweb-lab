@@ -29,7 +29,11 @@ from pyspark.sql.datasource import DataSource, DataSourceReader
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType
 
 # Import spark and display from Databricks SDK for IDE support
-from databricks.sdk.runtime import spark, display
+from databricks.sdk.runtime import spark, display, dbutils
+
+# Widgets for catalog/schema configuration (used in bonus section)
+dbutils.widgets.text("catalog", "workspace", "Catalog Name")
+dbutils.widgets.text("schema", "nemweb_lab", "Schema Name")
 
 class HelloWorldDataSource(DataSource):
     """Minimal data source that generates greeting messages."""
@@ -318,6 +322,178 @@ def validate_implementation():
     return len(errors) == 0
 
 validate_implementation()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Bonus: Incremental Ingestion with Delta Checkpointing
+# MAGIC
+# MAGIC For production use, you want to track what data has been ingested and only fetch new files.
+# MAGIC This uses a Delta table to checkpoint the last processed file.
+
+# COMMAND ----------
+
+# Configuration
+CATALOG = dbutils.widgets.get("catalog") if "catalog" in [w.name for w in dbutils.widgets.getAll()] else "workspace"
+SCHEMA = dbutils.widgets.get("schema") if "schema" in [w.name for w in dbutils.widgets.getAll()] else "nemweb_lab"
+
+CHECKPOINT_TABLE = f"{CATALOG}.{SCHEMA}.nemweb_checkpoints"
+DATA_TABLE = f"{CATALOG}.{SCHEMA}.nemweb_current"
+
+# Create checkpoint table if not exists
+spark.sql(f"""
+    CREATE TABLE IF NOT EXISTS {CHECKPOINT_TABLE} (
+        table_name STRING,
+        last_file STRING,
+        last_timestamp TIMESTAMP,
+        rows_ingested LONG,
+        updated_at TIMESTAMP
+    ) USING DELTA
+""")
+
+print(f"Checkpoint table: {CHECKPOINT_TABLE}")
+
+# COMMAND ----------
+
+def get_last_checkpoint(table_name: str) -> str:
+    """Get the last processed filename for a table."""
+    result = spark.sql(f"""
+        SELECT last_file FROM {CHECKPOINT_TABLE}
+        WHERE table_name = '{table_name}'
+    """).collect()
+    return result[0]["last_file"] if result else None
+
+
+def update_checkpoint(table_name: str, last_file: str, rows: int):
+    """Update the checkpoint after successful ingestion."""
+    spark.sql(f"""
+        MERGE INTO {CHECKPOINT_TABLE} AS target
+        USING (SELECT
+            '{table_name}' as table_name,
+            '{last_file}' as last_file,
+            current_timestamp() as last_timestamp,
+            {rows} as rows_ingested,
+            current_timestamp() as updated_at
+        ) AS source
+        ON target.table_name = source.table_name
+        WHEN MATCHED THEN UPDATE SET *
+        WHEN NOT MATCHED THEN INSERT *
+    """)
+    print(f"Checkpoint updated: {table_name} -> {last_file} ({rows} rows)")
+
+# COMMAND ----------
+
+import re
+from nemweb_utils import NEMWEB_CURRENT_URL, TABLE_CONFIG, REQUEST_TIMEOUT, USER_AGENT
+from urllib.request import urlopen, Request
+
+def fetch_new_files_since_checkpoint(table: str, max_files: int = 12) -> list[str]:
+    """
+    Get list of new files in CURRENT since last checkpoint.
+
+    Returns filenames sorted oldest-first for sequential processing.
+    """
+    config = TABLE_CONFIG[table]
+    folder = config["folder"]
+    file_prefix = config["file_prefix"]
+
+    # Get last checkpoint
+    last_file = get_last_checkpoint(table)
+    print(f"Last checkpoint: {last_file or 'None (first run)'}")
+
+    # List CURRENT directory
+    current_url = f"{NEMWEB_CURRENT_URL}/{folder}/"
+    request = Request(current_url, headers={"User-Agent": USER_AGENT})
+    with urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+        html = response.read().decode('utf-8')
+
+    # Find all matching files
+    pattern = rf'href="(PUBLIC_{file_prefix}_\d{{12}}\.zip)"'
+    all_files = sorted(re.findall(pattern, html, re.IGNORECASE))
+
+    # Filter to files newer than checkpoint
+    if last_file:
+        new_files = [f for f in all_files if f > last_file]
+    else:
+        new_files = all_files[-max_files:]  # First run: take recent files
+
+    print(f"Found {len(new_files)} new files (of {len(all_files)} total)")
+    return new_files[:max_files]
+
+# Check for new files
+new_files = fetch_new_files_since_checkpoint("DISPATCHREGIONSUM", max_files=6)
+for f in new_files:
+    print(f"  - {f}")
+
+# COMMAND ----------
+
+from nemweb_utils import fetch_nemweb_current, parse_nemweb_csv
+from pyspark.sql.functions import current_timestamp
+
+def incremental_ingest(table: str, region: str = None, max_files: int = 6):
+    """
+    Incrementally ingest new data since last checkpoint.
+
+    - Fetches only new files from CURRENT
+    - Appends to Delta table
+    - Updates checkpoint on success
+    """
+    # Get new files
+    new_files = fetch_new_files_since_checkpoint(table, max_files)
+
+    if not new_files:
+        print("No new files to ingest")
+        return 0
+
+    # Fetch data (fetch_nemweb_current will get the files)
+    data = fetch_nemweb_current(table, region=region, max_files=len(new_files))
+
+    if not data:
+        print("No data returned")
+        return 0
+
+    # Convert to DataFrame
+    schema = get_dispatchregionsum_schema()
+    rows = list(parse_nemweb_csv(data, schema))
+    df = spark.createDataFrame(rows, schema)
+    df = df.withColumn("_ingested_at", current_timestamp())
+
+    # Append to Delta table
+    df.write.format("delta").mode("append").saveAsTable(DATA_TABLE)
+
+    # Update checkpoint with newest file
+    update_checkpoint(table, new_files[-1], len(rows))
+
+    return len(rows)
+
+# Run incremental ingestion
+rows_ingested = incremental_ingest("DISPATCHREGIONSUM", region="NSW1", max_files=6)
+print(f"\nTotal rows ingested: {rows_ingested}")
+
+# COMMAND ----------
+
+# View checkpoint status
+display(spark.table(CHECKPOINT_TABLE))
+
+# COMMAND ----------
+
+# View ingested data
+if spark.catalog.tableExists(DATA_TABLE):
+    print(f"Data table: {DATA_TABLE}")
+    print(f"Total rows: {spark.table(DATA_TABLE).count()}")
+    display(spark.table(DATA_TABLE).orderBy("SETTLEMENTDATE", ascending=False).limit(10))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### How It Works
+# MAGIC
+# MAGIC 1. **Checkpoint Table** stores the last processed filename per source table
+# MAGIC 2. **On each run**, we list CURRENT and filter to files newer than checkpoint
+# MAGIC 3. **Append mode** adds new data to the Delta table (no duplicates if files are unique)
+# MAGIC 4. **Update checkpoint** after successful ingestion
+# MAGIC
+# MAGIC Run the incremental ingest cell multiple times - it will only fetch NEW files!
 
 # COMMAND ----------
 
