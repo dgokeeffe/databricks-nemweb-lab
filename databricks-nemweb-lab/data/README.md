@@ -4,6 +4,43 @@ This folder contains sample data for offline development and testing.
 
 ## Files
 
+### sample_dispatchis_raw.csv (Multi-Record Format)
+
+**This is how NEMWEB data actually looks!** A single DISPATCHIS file contains
+multiple record types (tables) in one CSV. Each row is prefixed with a record
+type identifier.
+
+**Record Types in DISPATCHIS Files:**
+| Record Type | Description |
+|-------------|-------------|
+| `DISPATCH,REGIONSUM` | Regional demand and generation summary |
+| `DISPATCH,PRICE` | Regional Reference Price (RRP) |
+| `DISPATCH,INTERCONNECTORRES` | Interconnector flows |
+| `DISPATCH,CONSTRAINT` | Network constraint results |
+| `DISPATCH,CASESOLUTION` | Dispatch solution metadata |
+| `DISPATCH,LOCALAREAPRICE` | Local area pricing |
+| `DISPATCH,MNSPBIDTRK` | MNSP bid tracking |
+
+**Row Prefixes:**
+- `C` - Comment/header row
+- `I` - Information row (column headers for a record type)
+- `D` - Data row
+
+**Example Structure:**
+```
+C,NEMP.WORLD,DISPATCH,LOAD,...           <- File header
+I,DISPATCH,REGIONSUM,4,SETTLEMENTDATE,...  <- Column headers for REGIONSUM
+D,DISPATCH,REGIONSUM,4,2025/01/22,...      <- Data row for REGIONSUM
+D,DISPATCH,REGIONSUM,4,2025/01/22,...      <- Another REGIONSUM row
+I,DISPATCH,PRICE,4,SETTLEMENTDATE,...      <- Column headers for PRICE
+D,DISPATCH,PRICE,4,2025/01/22,...          <- Data row for PRICE
+C,END OF REPORT,38                         <- File footer
+```
+
+Our custom data source parses this format and extracts the specific table you request.
+
+---
+
 ### sample_nemweb_data.csv
 
 Sample dispatch region summary data from the DISPATCHREGIONSUM table.
