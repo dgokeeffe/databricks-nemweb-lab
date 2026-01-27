@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Version for debugging - increment when making changes
-__version__ = "2.7.0"
+__version__ = "2.8.0"
 
 # Debug file path - check this in DBFS after errors
 DEBUG_LOG_PATH = "/tmp/nemweb_debug.log"
@@ -251,19 +251,94 @@ def _build_nemweb_url(folder: str, file_prefix: str, date: datetime) -> str:
     """
     Build NEMWEB URL for the specified folder, file prefix, and date.
 
-    Recent data (< 7 days) is in CURRENT, older data is in ARCHIVE.
-    Archive files are daily aggregates named PUBLIC_{prefix}_{YYYYMMDD}.zip
+    Always uses ARCHIVE for daily consolidated files (PUBLIC_{prefix}_{YYYYMMDD}.zip).
+    CURRENT folder only contains individual 5-minute interval files, not daily aggregates.
     """
-    days_ago = (datetime.now() - date).days
-
-    # NEMWEB file naming convention
+    # NEMWEB file naming convention for daily archives
     date_str = date.strftime("%Y%m%d")
     filename = f"PUBLIC_{file_prefix}_{date_str}.zip"
 
-    if days_ago < 7:
-        return f"{NEMWEB_CURRENT_URL}/{folder}/{filename}"
-    else:
-        return f"{NEMWEB_ARCHIVE_URL}/{folder}/{filename}"
+    # Always use ARCHIVE - CURRENT doesn't have daily consolidated files
+    return f"{NEMWEB_ARCHIVE_URL}/{folder}/{filename}"
+
+
+def fetch_nemweb_current(
+    table: str,
+    region: Optional[str] = None,
+    max_files: int = 6,
+    use_sample: bool = False
+) -> list[dict]:
+    """
+    Fetch recent data from NEMWEB CURRENT folder (5-minute interval files).
+
+    This is faster than fetching daily archives - useful for demos and testing.
+    CURRENT contains ~7 days of 5-minute interval files.
+
+    Args:
+        table: MMS table name (e.g., DISPATCHREGIONSUM)
+        region: Optional region filter (e.g., NSW1)
+        max_files: Maximum number of recent files to fetch (default: 6 = 30 mins)
+        use_sample: If True, return sample data instead of fetching
+
+    Returns:
+        List of dictionaries representing rows
+    """
+    import re
+
+    logger.info(f"fetch_nemweb_current: table={table}, region={region}, max_files={max_files}")
+
+    if use_sample:
+        sample_data = _get_sample_data(table, region)
+        logger.info(f"Returning {len(sample_data)} sample rows")
+        return sample_data
+
+    if table not in TABLE_CONFIG:
+        raise ValueError(f"Unsupported table: {table}. Supported: {list(TABLE_CONFIG.keys())}")
+
+    config = TABLE_CONFIG[table]
+    folder = config["folder"]
+    file_prefix = config["file_prefix"]
+    record_type = config.get("record_type")
+
+    # Fetch directory listing from CURRENT
+    current_url = f"{NEMWEB_CURRENT_URL}/{folder}/"
+    logger.info(f"Listing CURRENT directory: {current_url}")
+
+    try:
+        request = Request(current_url, headers={"User-Agent": USER_AGENT})
+        with urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+            html = response.read().decode('utf-8')
+    except (HTTPError, URLError) as e:
+        logger.error(f"Failed to list CURRENT directory: {e}")
+        raise
+
+    # Parse HTML for ZIP files matching our prefix
+    # Pattern: PUBLIC_DISPATCHIS_202501270005.zip
+    pattern = rf'href="(PUBLIC_{file_prefix}_\d{{12}}\.zip)"'
+    matches = re.findall(pattern, html, re.IGNORECASE)
+
+    if not matches:
+        logger.warning(f"No files found matching prefix {file_prefix} in CURRENT")
+        return []
+
+    # Sort by filename (date/time) descending and take most recent
+    matches = sorted(matches, reverse=True)[:max_files]
+    logger.info(f"Found {len(matches)} recent files to fetch")
+
+    rows = []
+    for filename in matches:
+        url = f"{NEMWEB_CURRENT_URL}/{folder}/{filename}"
+        try:
+            data = _fetch_and_extract_zip(url, record_type=record_type)
+            if region:
+                data = [row for row in data if row.get("REGIONID") == region]
+            rows.extend(data)
+            logger.debug(f"Fetched {len(data)} rows from {filename}")
+        except HTTPError as e:
+            logger.warning(f"Failed to fetch {filename}: {e}")
+
+    logger.info(f"fetch_nemweb_current complete: {len(rows)} total rows")
+    return rows
 
 
 def _fetch_and_extract_zip(url: str, record_type: str = None, use_retry: bool = True) -> list[dict]:

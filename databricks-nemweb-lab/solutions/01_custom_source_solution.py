@@ -130,14 +130,13 @@ notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext(
 repo_root = str(os.path.dirname(os.path.dirname(notebook_path)))
 sys.path.insert(0, f"/Workspace{repo_root}/src")
 
-from nemweb_utils import fetch_nemweb_data, parse_nemweb_csv
+from nemweb_utils import fetch_nemweb_data, fetch_nemweb_current, parse_nemweb_csv
 
-# Quick test - fetch one region's data
-test_data = fetch_nemweb_data(
+# Quick test - fetch recent data from CURRENT (faster than archives)
+test_data = fetch_nemweb_current(
     table="DISPATCHREGIONSUM",
     region="NSW1",
-    start_date="2025-12-01",
-    end_date="2025-12-01",
+    max_files=2,  # Just 2 files for quick test
     use_sample=True  # Use sample data for quick testing
 )
 print(f"Helper function works! Got {len(test_data)} rows")
@@ -198,13 +197,12 @@ class NemwebReader(DataSourceReader):
 
         SOLUTION 1.2b: Use helper functions to fetch and parse NEMWEB data
         """
-        # Fetch data using the helper function
-        # This handles: HTTP requests, ZIP extraction, multi-record CSV parsing
-        data = fetch_nemweb_data(
+        # Fetch recent data from CURRENT folder (5-minute interval files)
+        # This is faster than fetching daily archives - great for demos!
+        data = fetch_nemweb_current(
             table="DISPATCHREGIONSUM",
             region=partition.region,
-            start_date=partition.start_date,
-            end_date=partition.end_date
+            max_files=6  # ~30 minutes of data per region
         )
 
         # Convert to tuples matching schema using the parser helper
@@ -268,20 +266,15 @@ class NemwebDataSource(DataSource):
 # Register the data source with Spark
 spark.dataSource.register(NemwebDataSource)
 
-# Use yesterday's date (guaranteed to exist in CURRENT folder)
-from datetime import datetime, timedelta
-yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-
 # Read REAL data from NEMWEB API!
+# Uses recent 5-minute interval files from CURRENT (faster than daily archives)
 df = (spark.read
       .format("nemweb")
       .option("regions", "NSW1")  # Single region for speed
-      .option("start_date", yesterday)
-      .option("end_date", yesterday)
       .load())
 
 # Display results - this is LIVE data from the Australian electricity market!
-print(f"Row count: {df.count()} (expected: ~288 rows for 24hrs of 5-min intervals)")
+print(f"Row count: {df.count()} (expected: ~6 rows from recent 5-min intervals)")
 display(df)
 
 # COMMAND ----------

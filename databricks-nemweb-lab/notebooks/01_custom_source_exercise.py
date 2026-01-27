@@ -235,7 +235,7 @@ check_schema()
 # MAGIC We've provided helper functions that handle the HTTP fetching and parsing for you,
 # MAGIC so you can focus on learning the **Data Source API**.
 # MAGIC
-# MAGIC - `fetch_nemweb_data(table, region, start_date, end_date)` → Returns list of row dicts
+# MAGIC - `fetch_nemweb_current(table, region, max_files)` → Fetch recent 5-min interval files (fast!)
 # MAGIC - `parse_nemweb_csv(data, schema)` → Converts dicts to tuples matching schema
 
 # COMMAND ----------
@@ -250,14 +250,13 @@ notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext(
 repo_root = str(os.path.dirname(os.path.dirname(notebook_path)))
 sys.path.insert(0, f"/Workspace{repo_root}/src")
 
-from nemweb_utils import fetch_nemweb_data, parse_nemweb_csv
+from nemweb_utils import fetch_nemweb_current, parse_nemweb_csv
 
-# Quick test - fetch one region's data
-test_data = fetch_nemweb_data(
+# Quick test - fetch recent data from CURRENT folder (fast!)
+test_data = fetch_nemweb_current(
     table="DISPATCHREGIONSUM",
     region="NSW1",
-    start_date="2025-12-01",
-    end_date="2025-12-01",
+    max_files=2,  # Just 2 files for quick test
     use_sample=True  # Use sample data for quick testing
 )
 print(f"Helper function works! Got {len(test_data)} rows")
@@ -327,11 +326,10 @@ class NemwebReader(DataSourceReader):
         TODO 1.2b: Use the helper functions to fetch and parse data.
 
         Steps:
-        1. Call fetch_nemweb_data() with these parameters:
+        1. Call fetch_nemweb_current() with these parameters:
            - table="DISPATCHREGIONSUM"
            - region=partition.region
-           - start_date=partition.start_date
-           - end_date=partition.end_date
+           - max_files=6 (fetches ~30 mins of 5-min interval data)
 
         2. Call parse_nemweb_csv(data, self.schema) to convert to tuples
 
@@ -343,7 +341,7 @@ class NemwebReader(DataSourceReader):
         Docs: https://docs.databricks.com/en/pyspark/datasources.html
         """
         # TODO: Implement this method
-        # Step 1: Fetch data using fetch_nemweb_data(...)
+        # Step 1: Fetch data using fetch_nemweb_current(...)
         # Step 2: Parse with parse_nemweb_csv(...)
         # Step 3: Yield each tuple
         pass
@@ -393,7 +391,7 @@ def check_partitions_and_read():
             # Get first tuple from read()
             result = list(reader.read(test_partition))
             if not result:
-                issues.append("read() returned empty - check fetch_nemweb_data() call")
+                issues.append("read() returned empty - check fetch_nemweb_current() call")
             elif len(result[0]) != 12:
                 issues.append(f"read() tuple has {len(result[0])} fields, expected 12")
         except Exception as e:
@@ -466,19 +464,15 @@ class NemwebDataSource(DataSource):
 # Register the data source with Spark
 spark.dataSource.register(NemwebDataSource)
 
-# Use yesterday's date (guaranteed to exist in CURRENT folder)
-yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-
 # Read REAL data from NEMWEB API!
+# Uses recent 5-minute interval files from CURRENT (faster than daily archives)
 df = (spark.read
       .format("nemweb")
       .option("regions", "NSW1")  # Single region for speed
-      .option("start_date", yesterday)
-      .option("end_date", yesterday)
       .load())
 
 # Display results - this is LIVE data from the Australian electricity market!
-print(f"Row count: {df.count()} (expected: ~288 rows for 24hrs of 5-min intervals)")
+print(f"Row count: {df.count()} (expected: ~6 rows from recent 5-min intervals)")
 display(df)
 
 # COMMAND ----------
