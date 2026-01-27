@@ -42,6 +42,46 @@
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## The Hidden Cost of Undersized Clusters: Disk Spill
+# MAGIC
+# MAGIC When a cluster doesn't have enough memory, Spark **spills data to disk**. This is
+# MAGIC catastrophic for performance and cost.
+# MAGIC
+# MAGIC ### What is Disk Spill?
+# MAGIC
+# MAGIC During shuffles (joins, aggregations, sorts), Spark needs memory to hold intermediate data.
+# MAGIC If there isn't enough memory, it writes overflow to local disk, then reads it back later.
+# MAGIC
+# MAGIC ### The Performance Penalty
+# MAGIC
+# MAGIC | Operation | Speed |
+# MAGIC |-----------|-------|
+# MAGIC | Memory access | ~100 GB/s |
+# MAGIC | SSD disk access | ~500 MB/s |
+# MAGIC | **Penalty** | **~200x slower** |
+# MAGIC
+# MAGIC A task that takes 10 seconds in memory might take **30+ minutes** when spilling to disk!
+# MAGIC
+# MAGIC ### The Cost Impact
+# MAGIC
+# MAGIC | Scenario | Memory | Duration | DBU Cost |
+# MAGIC |----------|--------|----------|----------|
+# MAGIC | Right-sized | 64 GB | 5 min | $0.25 |
+# MAGIC | Undersized (spilling) | 16 GB | 45 min | **$2.25** |
+# MAGIC
+# MAGIC **The "cheap" undersized cluster costs 9x more!**
+# MAGIC
+# MAGIC ### How to Detect Spill in Spark UI
+# MAGIC
+# MAGIC In the Spark UI, check the **Stages** tab:
+# MAGIC - **Shuffle Spill (Memory)**: Data spilled from memory
+# MAGIC - **Shuffle Spill (Disk)**: Data written to disk
+# MAGIC
+# MAGIC > **Rule:** If you see ANY disk spill, your cluster is undersized. Add memory or workers.
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Scenario: NEMWEB Production Pipeline
 # MAGIC
 # MAGIC You're deploying the NEMWEB pipeline to production on **Azure Databricks**.
@@ -93,8 +133,11 @@ print(f"Recommended partitions: {historical_partitions}")
 # MAGIC | CPU Utilization | 70-80% | <50%: reduce cores; >90%: add cores |
 # MAGIC | Memory Utilization | 60-70% | <40%: use smaller instances; >80%: add memory |
 # MAGIC | Task Duration | 30s-5min | <10s: increase partition size; >10min: add partitions |
-# MAGIC | Shuffle Spill | 0 | Any spill: add memory or reduce partition size |
+# MAGIC | **Shuffle Spill** | **0** | **⚠️ Any spill = 10-100x slower! Add memory immediately** |
 # MAGIC | GC Time | <10% of task time | High GC: add memory, check for data skew |
+# MAGIC
+# MAGIC > **Critical:** Shuffle Spill is the #1 indicator of an undersized cluster. Even small
+# MAGIC > amounts of spill can multiply your job duration (and cost) by 10x or more.
 
 # COMMAND ----------
 
@@ -391,12 +434,17 @@ print(json.dumps(cluster_config, indent=2))
 # MAGIC - 2x workers finishing in half the time = same cost
 # MAGIC - Often faster than linear → actual savings
 # MAGIC
-# MAGIC ### 2. Enable Photon for Most Workloads
+# MAGIC ### 2. Disk Spill = Money on Fire 🔥
+# MAGIC - Undersized clusters spill to disk (200x slower than memory)
+# MAGIC - A "cheap" cluster that spills can cost **10x more** than a right-sized one
+# MAGIC - Check Spark UI: any Shuffle Spill means add memory/workers
+# MAGIC
+# MAGIC ### 3. Enable Photon for Most Workloads
 # MAGIC - 2x DBU cost but 2-4x speedup = net savings
 # MAGIC - Only disable for pure Python UDF or ML workloads
 # MAGIC - Default to ON, measure, then decide
 # MAGIC
-# MAGIC ### 3. Azure Instance Selection
+# MAGIC ### 4. Azure Instance Selection
 # MAGIC
 # MAGIC | Workload | Instance | When to Use |
 # MAGIC |----------|----------|-------------|
@@ -404,12 +452,12 @@ print(json.dumps(cluster_config, indent=2))
 # MAGIC | CPU-heavy | Standard_F8s_v2 | Heavy transforms |
 # MAGIC | Memory-heavy | Standard_E8s_v3 | Large aggregations |
 # MAGIC
-# MAGIC ### 4. Autoscaling Strategy
+# MAGIC ### 5. Autoscaling Strategy
 # MAGIC - **min**: Typical load at 70% utilization
 # MAGIC - **max**: Peak load within SLA
 # MAGIC - Use spot instances for workers (30-60% savings)
 # MAGIC
-# MAGIC ### 5. Measure, Don't Guess
+# MAGIC ### 6. Measure, Don't Guess
 # MAGIC - Run test workload, check Spark UI
 # MAGIC - Calculate: total_task_time / target_duration = required_parallelism
 # MAGIC - Add 20% overhead for startup/coordination
