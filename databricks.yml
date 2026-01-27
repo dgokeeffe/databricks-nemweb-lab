@@ -2,12 +2,12 @@ bundle:
   name: nemweb-lab
   databricks_cli_version: ">= 0.283.0"
 
-# Build the nemweb-datasource wheel artifact
+# Build wheel and copy to artifacts/latest
 artifacts:
   nemweb_datasource:
     type: whl
-    build: "cd databricks-nemweb-lab && uv build src --wheel"
     path: "./databricks-nemweb-lab/src"
+    build: "rm -f dist/*.whl && uv build --wheel --out-dir dist && mkdir -p ../artifacts && cp dist/nemweb_datasource-*.whl ../artifacts/"
 
 variables:
   # NEMWEB Lab configuration
@@ -29,13 +29,23 @@ variables:
     description: "Deployment environment (dev, staging, prod)"
     default: "dev"
 
-# Include all files needed for the lab
+# Include files needed for the lab, exclude build artifacts
 sync:
   include:
-    - "databricks-nemweb-lab/src/**"
+    - "databricks-nemweb-lab/src/*.py"
+    - "databricks-nemweb-lab/src/pipeline/**"
     - "databricks-nemweb-lab/notebooks/**"
     - "databricks-nemweb-lab/solutions/**"
-    - "databricks-nemweb-lab/app/**"
+    - "databricks-nemweb-lab/artifacts/**"
+  exclude:
+    - "databricks-nemweb-lab/src/.venv/**"
+    - "databricks-nemweb-lab/src/__pycache__/**"
+    - "databricks-nemweb-lab/src/*.egg-info/**"
+    - "databricks-nemweb-lab/src/build/**"
+    - "databricks-nemweb-lab/src/dist/**"
+    - "databricks-nemweb-lab/src/tests/**"
+    - "**/.pytest_cache/**"
+    - "**/__pycache__/**"
 
 targets:
   dev:
@@ -55,28 +65,20 @@ resources:
       name: "${var.project_name}-pipeline-${var.environment}"
       serverless: true
       catalog: "${var.catalog}"
-      target: "${var.schema}"
+      schema: "${var.schema}"
       libraries:
         - file:
             path: "./databricks-nemweb-lab/src/pipeline/nemweb_pipeline.py"
       configuration:
         bundle.sourcePath: ${workspace.file_path}/databricks-nemweb-lab/src
 
-  # NEMWEB Price Dashboard App
-  apps:
-    nemweb_prices:
-      name: "nemweb-prices-${var.environment}"
-      description: "Real-time NEM electricity price dashboard"
-      source_code_path: "./databricks-nemweb-lab/app"
-
-  # Lab workflow - runs exercises in sequence
   jobs:
     nemweb_lab_workflow:
       name: "${var.project_name} - Lab Exercises [${var.environment}]"
       tasks:
         - task_key: setup_validation
           notebook_task:
-            notebook_path: "./databricks-nemweb-lab/notebooks/00_setup_and_validation.py"
+            notebook_path: ${workspace.file_path}/databricks-nemweb-lab/notebooks/00_setup_and_validation.py
             base_parameters:
               catalog: "${var.catalog}"
               schema: "${var.schema}"
@@ -86,25 +88,25 @@ resources:
           depends_on:
             - task_key: setup_validation
           notebook_task:
-            notebook_path: "./databricks-nemweb-lab/notebooks/01_custom_source_exercise.py"
+            notebook_path: ${workspace.file_path}/databricks-nemweb-lab/notebooks/01_custom_source_exercise.py
 
         - task_key: lakeflow_pipeline
           depends_on:
             - task_key: custom_source
           notebook_task:
-            notebook_path: "./databricks-nemweb-lab/notebooks/02_lakeflow_pipeline.py"
+            notebook_path: ${workspace.file_path}/databricks-nemweb-lab/notebooks/02_lakeflow_pipeline.py
 
         - task_key: cluster_sizing
           depends_on:
             - task_key: lakeflow_pipeline
           notebook_task:
-            notebook_path: "./databricks-nemweb-lab/notebooks/03a_cluster_sizing_exercise.py"
+            notebook_path: ${workspace.file_path}/databricks-nemweb-lab/notebooks/03a_cluster_sizing_exercise.py
 
         - task_key: optimization_comparison
           depends_on:
             - task_key: lakeflow_pipeline
           notebook_task:
-            notebook_path: "./databricks-nemweb-lab/notebooks/03b_optimization_comparison.py"
+            notebook_path: ${workspace.file_path}/databricks-nemweb-lab/notebooks/03b_optimization_comparison.py
             base_parameters:
               catalog: "${var.catalog}"
               schema: "${var.schema}"
@@ -123,7 +125,7 @@ resources:
       tasks:
         - task_key: setup_validation
           notebook_task:
-            notebook_path: "./databricks-nemweb-lab/notebooks/00_setup_and_validation.py"
+            notebook_path: ${workspace.file_path}/databricks-nemweb-lab/notebooks/00_setup_and_validation.py
             base_parameters:
               catalog: "${var.catalog}"
               schema: "${var.schema}"
@@ -133,19 +135,19 @@ resources:
           depends_on:
             - task_key: setup_validation
           notebook_task:
-            notebook_path: "./databricks-nemweb-lab/solutions/01_custom_source_solution.py"
+            notebook_path: ${workspace.file_path}/databricks-nemweb-lab/solutions/01_custom_source_solution.py
 
         - task_key: lakeflow_pipeline_solution
           depends_on:
             - task_key: custom_source_solution
           notebook_task:
-            notebook_path: "./databricks-nemweb-lab/solutions/02_lakeflow_pipeline_solution.py"
+            notebook_path: ${workspace.file_path}/databricks-nemweb-lab/solutions/02_lakeflow_pipeline_solution.py
 
         - task_key: optimization_solution
           depends_on:
             - task_key: lakeflow_pipeline_solution
           notebook_task:
-            notebook_path: "./databricks-nemweb-lab/solutions/03b_optimization_comparison_solution.py"
+            notebook_path: ${workspace.file_path}/databricks-nemweb-lab/solutions/03b_optimization_comparison_solution.py
             base_parameters:
               catalog: "${var.catalog}"
               schema: "${var.schema}"
