@@ -24,10 +24,13 @@ from urllib.error import HTTPError, URLError
 if TYPE_CHECKING:
     from pyspark.sql.types import StructType
 
+# Import types needed at runtime (not just for type checking)
+from pyspark.sql.types import DoubleType, TimestampType, StringType, IntegerType
+
 logger = logging.getLogger(__name__)
 
 # Version for debugging - increment when making changes
-__version__ = "2.10.9"
+__version__ = "2.10.15"
 
 # Debug file path - check this in DBFS after errors
 DEBUG_LOG_PATH = "/tmp/nemweb_debug.log"
@@ -267,7 +270,8 @@ def fetch_nemweb_current(
     region: Optional[str] = None,
     max_files: int = 6,
     use_sample: bool = False,
-    debug: bool = False
+    debug: bool = False,
+    target_date: Optional[str] = None
 ) -> list[dict]:
     """
     Fetch recent data from NEMWEB CURRENT folder (5-minute interval files).
@@ -279,8 +283,12 @@ def fetch_nemweb_current(
         table: MMS table name (e.g., DISPATCHREGIONSUM)
         region: Optional region filter (e.g., NSW1)
         max_files: Maximum number of recent files to fetch (default: 6 = 30 mins)
+                   Ignored if target_date is specified (filters by date instead)
         use_sample: If True, return sample data instead of fetching
         debug: If True, print debug info to stdout (useful for Databricks)
+        target_date: Optional date in YYYY-MM-DD format. If specified, filters files
+                    to only those from this date (handles timezone differences).
+                    Files are named like PUBLIC_DISPATCHIS_YYYYMMDDHHMM_*.zip
 
     Returns:
         List of dictionaries representing rows
@@ -324,18 +332,56 @@ def fetch_nemweb_current(
     # Pattern: PUBLIC_DISPATCHIS_202501270005_0000000500374526.zip
     # Format: PREFIX_YYYYMMDDHHMM_SEQUENCEID.zip
     pattern = rf'(PUBLIC_{file_prefix}_\d{{12}}_\d+\.zip)'
-    matches = re.findall(pattern, html, re.IGNORECASE)
-
-    if not matches:
+    all_matches = re.findall(pattern, html, re.IGNORECASE)
+    
+    if not all_matches:
         log(f"WARNING: No files found matching prefix {file_prefix} in CURRENT")
         if debug:
             # Print a sample of the HTML to help debug
             print(f"[NEMWEB] HTML sample (first 500 chars): {html[:500]}")
         return []
 
-    # Deduplicate (files appear twice in HTML) and sort by filename descending
-    unique_matches = sorted(set(matches), reverse=True)[:max_files]
-    log(f"Found {len(unique_matches)} recent files: {unique_matches[:3]}...")
+    # Filter by target_date if specified (extract date part from timestamp in filename)
+    if target_date:
+        from datetime import datetime as dt
+        target_date_obj = dt.strptime(target_date, "%Y-%m-%d")
+        target_date_str = target_date_obj.strftime("%Y%m%d")
+        
+        # Find files matching the target date
+        # Filename format: PUBLIC_{file_prefix}_YYYYMMDDHHMM_SEQUENCE.zip
+        # Extract timestamp (12 digits) and take first 8 chars for date
+        matching_files = []
+        timestamp_pattern = rf'PUBLIC_{file_prefix}_(\d{{12}})_\d+\.zip'
+        
+        for filename in all_matches:
+            match = re.search(timestamp_pattern, filename, re.IGNORECASE)
+            if match:
+                timestamp = match.group(1)  # YYYYMMDDHHMM
+                date_part = timestamp[:8]  # YYYYMMDD
+                if date_part == target_date_str:
+                    matching_files.append(filename)
+        
+        if not matching_files:
+            log(f"WARNING: No files found for date {target_date} (looking for {target_date_str})")
+            if debug:
+                # Show sample of available dates from first 20 files
+                sample_dates = []
+                for filename in all_matches[:20]:
+                    match = re.search(timestamp_pattern, filename, re.IGNORECASE)
+                    if match:
+                        sample_dates.append(match.group(1)[:8])
+                unique_dates = sorted(set(sample_dates))
+                print(f"[NEMWEB] Available dates in CURRENT (sample): {unique_dates}")
+            return []
+        
+        # Deduplicate and sort by filename descending (most recent first)
+        unique_matches = sorted(set(matching_files), reverse=True)
+        log(f"Found {len(unique_matches)} files for date {target_date} ({target_date_str})")
+    else:
+        # Original behavior: just take most recent files
+        # Deduplicate (files appear twice in HTML) and sort by filename descending
+        unique_matches = sorted(set(all_matches), reverse=True)[:max_files]
+        log(f"Found {len(unique_matches)} recent files (no date filter): {unique_matches[:3]}...")
 
     rows = []
     for filename in unique_matches:
@@ -532,12 +578,19 @@ def _get_sample_data(table: str, region: Optional[str] = None) -> list[dict]:
 
 
 def _debug_log(msg: str) -> None:
-    """Write debug message to file (visible on workers)."""
+    """Write debug message to file and stdout (visible on workers)."""
     try:
+        # Print to stdout for immediate visibility in Databricks
+        print(f"[NEMWEB_DEBUG] {msg}")
+        # Also write to file for later inspection
         with open(DEBUG_LOG_PATH, "a") as f:
             f.write(f"{msg}\n")
-    except Exception:
-        pass
+    except Exception as e:
+        # If file write fails, at least try to print
+        try:
+            print(f"[NEMWEB_DEBUG] {msg}")
+        except:
+            pass
 
 
 def _validate_tuple_types(tuple_values: list, schema: "StructType") -> tuple:
@@ -550,7 +603,6 @@ def _validate_tuple_types(tuple_values: list, schema: "StructType") -> tuple:
     Returns:
         Validated tuple with all timestamp fields guaranteed to be datetime.datetime or None
     """
-    from pyspark.sql.types import TimestampType
     validated = []
     
     for field, value in zip(schema.fields, tuple_values):
@@ -619,6 +671,14 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
     """
     _debug_log(f"=== parse_nemweb_csv v{__version__} started ===")
     _debug_log(f"Processing {len(data)} rows")
+    _debug_log(f"Schema has {len(schema.fields)} fields")
+    
+    # Debug: Check datetime import paths
+    import datetime as dt_module_check
+    _debug_log(f"datetime module path: {datetime.__module__}")
+    _debug_log(f"dt_module.datetime path: {dt_module_check.datetime.__module__}")
+    _debug_log(f"datetime class id: {id(datetime)}")
+    _debug_log(f"dt_module.datetime class id: {id(dt_module_check.datetime)}")
 
     field_names = [field.name for field in schema.fields]
     field_types = {field.name: field.dataType for field in schema.fields}
@@ -627,6 +687,8 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
     for row in data:
         row_num += 1
         try:
+            if row_num <= 3:
+                _debug_log(f"Row {row_num}: Starting processing")
             values = []
             skip_row = False
             
@@ -637,13 +699,14 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
                     values.append(None)
                 else:
                     # Match Arrow datasource approach: parse timestamp FIRST, then coerce
-                    from pyspark.sql.types import TimestampType
                     if isinstance(field_types[name], TimestampType):
                         # Parse timestamp first (matches Arrow datasource _row_to_tuple logic)
                         parsed_ts = _parse_timestamp_value(raw_value)
                         # Skip rows with unparseable timestamps for required fields
                         if parsed_ts is None and name == "SETTLEMENTDATE":
                             _debug_log(f"Row {row_num}: Skipping row - SETTLEMENTDATE cannot be parsed")
+                            _debug_log(f"Row {row_num}: Raw SETTLEMENTDATE value: {repr(raw_value)}")
+                            _debug_log(f"Row {row_num}: Raw SETTLEMENTDATE type: {type(raw_value).__name__}")
                             skip_row = True
                             break
                         # Ensure it's a pure Python datetime (coerce any non-native types)
@@ -667,11 +730,11 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
             
             # Skip rows with invalid timestamps
             if skip_row:
+                _debug_log(f"Row {row_num}: SKIPPED (skip_row=True)")
                 continue
 
             # FINAL VALIDATION: Double-check all timestamp fields are datetime or None
             # This is a critical safeguard to prevent Spark assertion errors
-            from pyspark.sql.types import TimestampType
             for idx, (field, value) in enumerate(zip(schema.fields, values)):
                 if isinstance(field.dataType, TimestampType):
                     if value is not None:
@@ -703,6 +766,7 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
             
             # Skip row if final validation failed
             if skip_row:
+                _debug_log(f"Row {row_num}: SKIPPED after final validation (skip_row=True)")
                 continue
 
             # Final tuple validation - ensures all types are correct
@@ -713,7 +777,6 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
 
             # CRITICAL FINAL CHECK: Verify tuple one more time before yielding
             # This is the absolute last chance to catch any invalid values
-            from pyspark.sql.types import TimestampType
             final_values = []
             skip_final = False
             
@@ -750,13 +813,100 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
                     ts_type = type(ts_val).__name__ if ts_val is not None else "None"
                     _debug_log(f"Row {row_num} timestamp[{ts_field_idx}]: type={ts_type}, val={ts_val}")
 
-            yield validated_tuple
+            # CRITICAL: Final type check before yielding - Spark's Arrow serializer
+            # requires exact datetime.datetime instances (not subclasses or wrappers)
+            # Spark Connect's conversion.py line 299 checks: assert isinstance(value, datetime.datetime)
+            # Ensure we're returning the exact datetime.datetime class, not a subclass
+            final_tuple_values = []
+            for idx, (field, val) in enumerate(zip(schema.fields, validated_tuple)):
+                if isinstance(field.dataType, TimestampType):
+                    if val is None:
+                        final_tuple_values.append(None)
+                    elif isinstance(val, datetime):
+                        # CRITICAL: Spark's conversion.py line 299 checks isinstance(value, datetime.datetime)
+                        # where datetime is imported as "import datetime" (not "from datetime import datetime")
+                        # 
+                        # Spark expects timezone-naive datetime.datetime objects, then converts them to UTC.
+                        # The assertion happens BEFORE conversion, so we must pass naive datetimes.
+                        # 
+                        # The issue: Spark Connect may serialize/unpickle datetime objects in a way that breaks
+                        # isinstance checks. We need to ensure the datetime is created using the exact import
+                        # path Spark uses: datetime.datetime (from "import datetime")
+                        import datetime as dt_module
+                        
+                        # Ensure tz-naive (Spark expects naive, then converts to UTC)
+                        if val.tzinfo is not None:
+                            val = val.astimezone(dt_module.timezone.utc).replace(tzinfo=None)
+                        
+                        # CRITICAL: Use dt_module.datetime to match Spark's import path exactly
+                        # Spark uses "import datetime" so it checks isinstance(value, datetime.datetime)
+                        # We need to create datetime using the same module reference Spark uses
+                        final_dt = dt_module.datetime(val.year, val.month, val.day,
+                                                      val.hour, val.minute, val.second,
+                                                      val.microsecond)
+                        
+                        # Extensive debugging for first few rows
+                        if row_num <= 3:
+                            _debug_log(f"Row {row_num}: === DATETIME DEBUG ===")
+                            _debug_log(f"Row {row_num}: Original val = {val}, type = {type(val)}")
+                            _debug_log(f"Row {row_num}: Created final_dt = {final_dt}, type = {type(final_dt)}")
+                            _debug_log(f"Row {row_num}: type(final_dt).__module__ = {type(final_dt).__module__}")
+                            _debug_log(f"Row {row_num}: type(final_dt).__name__ = {type(final_dt).__name__}")
+                            _debug_log(f"Row {row_num}: isinstance(final_dt, datetime) = {isinstance(final_dt, datetime)}")
+                            _debug_log(f"Row {row_num}: isinstance(final_dt, dt_module.datetime) = {isinstance(final_dt, dt_module.datetime)}")
+                            _debug_log(f"Row {row_num}: type(final_dt) is datetime = {type(final_dt) is datetime}")
+                            _debug_log(f"Row {row_num}: type(final_dt) is dt_module.datetime = {type(final_dt) is dt_module.datetime}")
+                            _debug_log(f"Row {row_num}: datetime module = {datetime.__module__}")
+                            _debug_log(f"Row {row_num}: dt_module.datetime module = {dt_module.datetime.__module__}")
+                            _debug_log(f"Row {row_num}: datetime class id = {id(datetime)}")
+                            _debug_log(f"Row {row_num}: dt_module.datetime class id = {id(dt_module.datetime)}")
+                            _debug_log(f"Row {row_num}: final_dt class id = {id(type(final_dt))}")
+                        
+                        final_tuple_values.append(final_dt)
+                    else:
+                        _debug_log(f"Row {row_num}: CRITICAL - timestamp at idx {idx} is {type(val)}, not datetime! Setting to None")
+                        final_tuple_values.append(None)
+                else:
+                    final_tuple_values.append(val)
+            
+            final_tuple = tuple(final_tuple_values)
+            
+            # Debug: Verify datetime types one final time before yielding
+            for idx, (field, val) in enumerate(zip(schema.fields, final_tuple)):
+                if isinstance(field.dataType, TimestampType):
+                    if val is not None:
+                        # Verify it's exactly datetime.datetime
+                        dt_type = type(val)
+                        dt_type_name = dt_type.__name__
+                        dt_module = dt_type.__module__
+                        is_datetime_instance = isinstance(val, datetime)
+                        _debug_log(f"Row {row_num}: Timestamp[{idx}] = {val}, "
+                                  f"type={dt_type_name}, module={dt_module}, "
+                                  f"isinstance(datetime)={is_datetime_instance}, "
+                                  f"type is datetime={dt_type is datetime}")
+            
+            _debug_log(f"Row {row_num}: YIELDING tuple with {len(final_tuple)} values")
+            
+            # Try to yield and catch any serialization errors
+            try:
+                yield final_tuple
+            except Exception as yield_error:
+                _debug_log(f"Row {row_num}: YIELD ERROR - {type(yield_error).__name__}: {yield_error}")
+                # Try to identify which field is causing the issue
+                for idx, (field, val) in enumerate(zip(schema.fields, final_tuple)):
+                    if isinstance(field.dataType, TimestampType):
+                        _debug_log(f"Row {row_num}: Field[{idx}] {field.name} = {val}, type = {type(val)}")
+                raise
 
         except Exception as e:
-            _debug_log(f"ROW {row_num} ERROR: {e}")
+            _debug_log(f"ROW {row_num} ERROR: {type(e).__name__}: {e}")
+            import traceback
+            _debug_log(f"ROW {row_num} TRACEBACK: {traceback.format_exc()}")
             continue
 
-    _debug_log(f"=== parse_nemweb_csv complete: {row_num} rows ===")
+    _debug_log(f"=== parse_nemweb_csv complete: processed {row_num} input rows ===")
+    # Count how many tuples were actually yielded (for debugging)
+    # Note: This won't be accurate since we can't count yields, but we log skipped rows
 
 
 def _to_python_scalar(v: any, spark_type: any = None) -> any:
@@ -859,7 +1009,6 @@ def _to_python_scalar(v: any, spark_type: any = None) -> any:
     # CRITICAL: Check TimestampType BEFORE general string handling
     # This ensures timestamp strings are parsed, not returned as strings
     if spark_type:
-        from pyspark.sql.types import TimestampType
         if isinstance(spark_type, TimestampType):
             # If we already have a datetime, return it
             if isinstance(v, datetime):
@@ -893,8 +1042,6 @@ def _convert_value(value, spark_type):
     For TimestampType, returns tz-naive datetime.datetime objects.
     All values are coerced to pure Python types for Serverless compatibility.
     """
-    from pyspark.sql.types import StringType, DoubleType, IntegerType, TimestampType
-
     # Handle None/empty values
     if value is None or value == "":
         return None
@@ -980,7 +1127,12 @@ def _parse_timestamp_value(ts_str: str) -> Optional[datetime]:
 
         for fmt in formats:
             try:
-                return datetime.strptime(ts_str, fmt)
+                dt = datetime.strptime(ts_str, fmt)
+                # Ensure we return exact datetime.datetime (not a subclass)
+                # Spark's serializer is very strict about this
+                if type(dt) is not datetime:
+                    return datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, dt.microsecond)
+                return dt
             except ValueError:
                 continue
 
