@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Version for debugging - increment when making changes
-__version__ = "2.10.0"
+__version__ = "2.10.4"
 
 # Debug file path - check this in DBFS after errors
 DEBUG_LOG_PATH = "/tmp/nemweb_debug.log"
@@ -266,7 +266,8 @@ def fetch_nemweb_current(
     table: str,
     region: Optional[str] = None,
     max_files: int = 6,
-    use_sample: bool = False
+    use_sample: bool = False,
+    debug: bool = False
 ) -> list[dict]:
     """
     Fetch recent data from NEMWEB CURRENT folder (5-minute interval files).
@@ -279,17 +280,23 @@ def fetch_nemweb_current(
         region: Optional region filter (e.g., NSW1)
         max_files: Maximum number of recent files to fetch (default: 6 = 30 mins)
         use_sample: If True, return sample data instead of fetching
+        debug: If True, print debug info to stdout (useful for Databricks)
 
     Returns:
         List of dictionaries representing rows
     """
     import re
 
-    logger.info(f"fetch_nemweb_current: table={table}, region={region}, max_files={max_files}")
+    def log(msg):
+        logger.info(msg)
+        if debug:
+            print(f"[NEMWEB] {msg}")
+
+    log(f"fetch_nemweb_current: table={table}, region={region}, max_files={max_files}")
 
     if use_sample:
         sample_data = _get_sample_data(table, region)
-        logger.info(f"Returning {len(sample_data)} sample rows")
+        log(f"Returning {len(sample_data)} sample rows")
         return sample_data
 
     if table not in TABLE_CONFIG:
@@ -302,14 +309,15 @@ def fetch_nemweb_current(
 
     # Fetch directory listing from CURRENT
     current_url = f"{NEMWEB_CURRENT_URL}/{folder}/"
-    logger.info(f"Listing CURRENT directory: {current_url}")
+    log(f"Listing CURRENT directory: {current_url}")
 
     try:
         request = Request(current_url, headers={"User-Agent": USER_AGENT})
         with urlopen(request, timeout=REQUEST_TIMEOUT) as response:
             html = response.read().decode('utf-8')
+        log(f"Got directory listing ({len(html)} bytes)")
     except (HTTPError, URLError) as e:
-        logger.error(f"Failed to list CURRENT directory: {e}")
+        log(f"ERROR: Failed to list CURRENT directory: {e}")
         raise
 
     # Parse HTML for ZIP files matching our prefix
@@ -319,26 +327,32 @@ def fetch_nemweb_current(
     matches = re.findall(pattern, html, re.IGNORECASE)
 
     if not matches:
-        logger.warning(f"No files found matching prefix {file_prefix} in CURRENT")
+        log(f"WARNING: No files found matching prefix {file_prefix} in CURRENT")
+        if debug:
+            # Print a sample of the HTML to help debug
+            print(f"[NEMWEB] HTML sample (first 500 chars): {html[:500]}")
         return []
 
-    # Sort by filename (date/time) descending and take most recent
-    matches = sorted(matches, reverse=True)[:max_files]
-    logger.info(f"Found {len(matches)} recent files to fetch")
+    # Deduplicate (files appear twice in HTML) and sort by filename descending
+    unique_matches = sorted(set(matches), reverse=True)[:max_files]
+    log(f"Found {len(unique_matches)} recent files: {unique_matches[:3]}...")
 
     rows = []
-    for filename in matches:
+    for filename in unique_matches:
         url = f"{NEMWEB_CURRENT_URL}/{folder}/{filename}"
         try:
             data = _fetch_and_extract_zip(url, record_type=record_type)
+            log(f"Fetched {len(data)} rows from {filename}")
             if region:
                 data = [row for row in data if row.get("REGIONID") == region]
+                log(f"After region filter ({region}): {len(data)} rows")
             rows.extend(data)
-            logger.debug(f"Fetched {len(data)} rows from {filename}")
         except HTTPError as e:
-            logger.warning(f"Failed to fetch {filename}: {e}")
+            log(f"WARNING: Failed to fetch {filename}: {e}")
+        except Exception as e:
+            log(f"ERROR: Exception fetching {filename}: {e}")
 
-    logger.info(f"fetch_nemweb_current complete: {len(rows)} total rows")
+    log(f"fetch_nemweb_current complete: {len(rows)} total rows")
     return rows
 
 
@@ -530,15 +544,15 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
     """
     Parse NEMWEB data and yield tuples matching the Spark schema.
 
-    NOTE: Timestamps are returned as strings (not datetime) for Serverless
-    compatibility. Use Spark's to_timestamp() to cast after loading.
+    All values are coerced to pure Python types for Serverless Arrow compatibility.
+    Timestamps are returned as datetime.datetime objects (not pandas/numpy types).
 
     Args:
         data: List of dictionaries from CSV
         schema: Spark StructType to match
 
     Yields:
-        Tuples with values in schema order
+        Tuples with values in schema order (all pure Python types)
     """
     _debug_log(f"=== parse_nemweb_csv v{__version__} started ===")
     _debug_log(f"Processing {len(data)} rows")
@@ -557,8 +571,11 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
                 if raw_value is None or raw_value == "":
                     values.append(None)
                 else:
+                    # Convert to appropriate type
                     converted = _convert_value(raw_value, field_types[name])
-                    values.append(converted)
+                    # Coerce to pure Python type (handles pandas/numpy edge cases)
+                    coerced = _to_python_scalar(converted, field_types[name])
+                    values.append(coerced)
 
             result = tuple(values)
 
@@ -576,14 +593,111 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
 
 
 
+def _to_python_scalar(v: any, spark_type: any = None) -> any:
+    """
+    Coerce any value to a pure Python native type.
+
+    This ensures compatibility with Serverless Arrow fast path which requires
+    exact Python types (datetime.datetime, not pandas.Timestamp or numpy.datetime64).
+
+    Args:
+        v: Value to coerce
+        spark_type: Optional Spark type hint for better conversion
+
+    Returns:
+        Pure Python scalar (datetime.datetime, float, int, str, bool, None)
+    """
+    # None passes through
+    if v is None:
+        return None
+
+    # Timestamp-like -> datetime.datetime
+    if isinstance(v, datetime):
+        # Ensure tz-naive
+        if v.tzinfo is not None:
+            import datetime as dt
+            return v.astimezone(dt.timezone.utc).replace(tzinfo=None)
+        return v
+
+    # Handle pandas Timestamp
+    try:
+        import pandas as pd
+        if isinstance(v, pd.Timestamp):
+            if pd.isna(v):
+                return None
+            # Convert to tz-naive if needed
+            if v.tz is not None:
+                v = v.tz_convert(None)
+            return v.to_pydatetime()
+    except (ImportError, AttributeError):
+        pass
+
+    # Handle numpy datetime64
+    try:
+        import numpy as np
+        if isinstance(v, (np.datetime64,)):
+            import pandas as pd
+            ts = pd.to_datetime(v, utc=False)
+            if pd.isna(ts):
+                return None
+            return ts.to_pydatetime()
+    except (ImportError, AttributeError):
+        pass
+
+    # Handle numpy numeric types -> Python types
+    try:
+        import numpy as np
+        if isinstance(v, (np.float32, np.float64)):
+            return float(v)
+        if isinstance(v, (np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16, np.uint32, np.uint64)):
+            return int(v)
+        if isinstance(v, np.bool_):
+            return bool(v)
+    except (ImportError, AttributeError):
+        pass
+
+    # Handle pandas numeric types
+    try:
+        import pandas as pd
+        if isinstance(v, (pd.Float64Dtype, pd.Int64Dtype)):
+            if pd.isna(v):
+                return None
+            return float(v) if isinstance(v, pd.Float64Dtype) else int(v)
+    except (ImportError, AttributeError):
+        pass
+
+    # Handle bytes-like objects
+    if hasattr(v, 'tobytes'):
+        try:
+            return v.tobytes()
+        except (AttributeError, TypeError):
+            pass
+
+    # String handling - ensure pure str
+    if isinstance(v, str):
+        return v
+
+    # For TimestampType columns, try parsing as timestamp string
+    if spark_type:
+        from pyspark.sql.types import TimestampType
+        if isinstance(spark_type, TimestampType):
+            if isinstance(v, str):
+                parsed = _parse_timestamp_value(v)
+                if parsed is not None:
+                    return parsed
+
+    # Default: return as-is (assume already Python-native)
+    return v
+
+
 def _convert_value(value, spark_type):
     """
     Convert value to appropriate Python type based on Spark type.
 
-    NOTE: Timestamps are handled as StringType in the schema for Serverless
-    compatibility. Use Spark's to_timestamp() to cast after loading.
+    For TimestampType, returns tz-naive datetime.datetime objects.
+    All values are coerced to pure Python types for Serverless compatibility.
     """
-    from pyspark.sql.types import StringType, DoubleType, IntegerType
+    from pyspark.sql.types import StringType, DoubleType, IntegerType, TimestampType
 
     # Handle None/empty values
     if value is None or value == "":
@@ -598,26 +712,66 @@ def _convert_value(value, spark_type):
     if str_value == "":
         return None
 
-    if isinstance(spark_type, StringType):
-        # For timestamp columns (now StringType), normalize format
+    if isinstance(spark_type, TimestampType):
+        # Parse to datetime.datetime (tz-naive) for Spark compatibility
+        parsed_ts = _parse_timestamp_value(str_value)
+        # Coerce to ensure pure Python datetime
+        return _to_python_scalar(parsed_ts, spark_type)
+
+    elif isinstance(spark_type, StringType):
+        # For string columns, normalize timestamp format if present
         if "/" in str_value:
             str_value = str_value.replace("/", "-")
         return str_value
 
     elif isinstance(spark_type, DoubleType):
         try:
-            return float(str_value)
+            float_val = float(str_value)
+            # Coerce to ensure pure Python float (not numpy)
+            return _to_python_scalar(float_val, spark_type)
         except (ValueError, TypeError):
             return None
 
     elif isinstance(spark_type, IntegerType):
         try:
-            return int(float(str_value))
+            int_val = int(float(str_value))
+            # Coerce to ensure pure Python int (not numpy)
+            return _to_python_scalar(int_val, spark_type)
         except (ValueError, TypeError):
             return None
 
     else:
         return str_value
+
+
+def _parse_timestamp_value(ts_str: str) -> datetime:
+    """
+    Parse timestamp string to tz-naive datetime.datetime.
+
+    Returns None only if parsing completely fails.
+    Spark requires datetime.datetime objects for TimestampType columns.
+    """
+    if not ts_str:
+        return None
+
+    ts_str = ts_str.strip()
+    if not ts_str:
+        return None
+
+    formats = [
+        "%Y/%m/%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%Y-%m-%d %H:%M",
+    ]
+
+    for fmt in formats:
+        try:
+            return datetime.strptime(ts_str, fmt)
+        except ValueError:
+            continue
+
+    return None
 
 
 def get_nemweb_schema(table: str) -> "StructType":

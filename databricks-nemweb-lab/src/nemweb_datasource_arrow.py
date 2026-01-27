@@ -5,6 +5,13 @@ This module implements a custom data source using PyArrow RecordBatch
 for zero-copy transfer to Spark. This avoids Python datetime serialization
 issues that occur with Spark Connect (Serverless).
 
+IMPORTANT - Serverless Arrow Fast Path Compatibility:
+    Serverless uses a stricter Arrow fast path that requires exact Python-native
+    types. The _to_python_scalar() function ensures all values are pure Python
+    types (datetime.datetime, not pandas.Timestamp or numpy.datetime64).
+    This prevents "assert isinstance(value, datetime.datetime)" errors when
+    Arrow converters process rows.
+
 Supports three modes:
 1. Volume mode: Read from pre-downloaded files in UC Volume (fastest)
 2. Auto-download mode: Download to volume first, then read (recommended)
@@ -541,7 +548,7 @@ class NemwebArrowReader(DataSourceReader):
 
         table_config = SCHEMAS.get(partition.table, SCHEMAS["DISPATCHREGIONSUM"])
         record_type = table_config["record_type"]
-        arrow_schema = self._build_arrow_schema(table_config["fields"])
+        fields = table_config["fields"]
 
         try:
             with open(partition.file_path, 'rb') as f:
@@ -569,16 +576,23 @@ class NemwebArrowReader(DataSourceReader):
             if self.regions and rows:
                 rows = [r for r in rows if r.get("REGIONID") in self.regions]
 
-            if rows:
-                batch = self._rows_to_record_batch(rows, table_config["fields"], arrow_schema)
-                yield batch
+            # Yield tuples with pure Python types for Serverless Arrow compatibility
+            # Note: We yield tuples (not RecordBatch) to match Spark's expected format.
+            # The reference Arrow datasource (allisonwang-db/pyspark-data-sources) yields
+            # RecordBatches, but that's for Arrow IPC files. For CSV parsing, tuples work
+            # well and our coercion ensures pure Python types pass Arrow's strict checks.
+            # Filter out rows with unparseable timestamps
+            for row in rows:
+                result = self._row_to_tuple(row, fields)
+                if result is not None:
+                    yield result
 
         except Exception as e:
             logger.error(f"Error reading {partition.file_path}: {e}")
             raise
 
     def _read_http(self, partition: NemwebArrowPartition) -> Iterator:
-        """Fetch data via HTTP and return as RecordBatch."""
+        """Fetch data via HTTP and return as tuples."""
         import zipfile
         import io
         from urllib.request import urlopen, Request
@@ -586,7 +600,7 @@ class NemwebArrowReader(DataSourceReader):
 
         table_config = SCHEMAS.get(partition.table, SCHEMAS["DISPATCHREGIONSUM"])
         record_type = table_config["record_type"]
-        arrow_schema = self._build_arrow_schema(table_config["fields"])
+        fields = table_config["fields"]
 
         try:
             url = self._build_url(partition.table, partition.date)
@@ -620,9 +634,16 @@ class NemwebArrowReader(DataSourceReader):
             if partition.region:
                 rows = [r for r in rows if r.get("REGIONID") == partition.region]
 
-            if rows:
-                batch = self._rows_to_record_batch(rows, table_config["fields"], arrow_schema)
-                yield batch
+            # Yield tuples with pure Python types for Serverless Arrow compatibility
+            # Note: We yield tuples (not RecordBatch) to match Spark's expected format.
+            # The reference Arrow datasource (allisonwang-db/pyspark-data-sources) yields
+            # RecordBatches, but that's for Arrow IPC files. For CSV parsing, tuples work
+            # well and our coercion ensures pure Python types pass Arrow's strict checks.
+            # Filter out rows with unparseable timestamps
+            for row in rows:
+                result = self._row_to_tuple(row, fields)
+                if result is not None:
+                    yield result
 
         except HTTPError as e:
             if e.code == 404:
@@ -666,7 +687,16 @@ class NemwebArrowReader(DataSourceReader):
         return pa.schema(arrow_fields)
 
     def _rows_to_record_batch(self, rows: list, fields: list, arrow_schema: "pa.Schema") -> "pa.RecordBatch":
-        """Convert parsed rows to PyArrow RecordBatch."""
+        """
+        Convert parsed rows to PyArrow RecordBatch.
+        
+        All values are coerced to pure Python types before creating Arrow arrays
+        to ensure Serverless Arrow fast path compatibility.
+        
+        Note: PyArrow's pa.array() can handle pandas/numpy types, but for maximum
+        compatibility with Serverless strict type checking, we ensure pure Python
+        types first using _to_python_scalar().
+        """
         import pyarrow as pa
 
         # Initialize column arrays
@@ -677,20 +707,28 @@ class NemwebArrowReader(DataSourceReader):
                 raw_val = row.get(name)
 
                 if isinstance(spark_type, TimestampType):
-                    columns[name].append(self._parse_timestamp(raw_val))
+                    # Parse and coerce to pure Python datetime
+                    parsed_ts = self._parse_timestamp(raw_val)
+                    columns[name].append(self._to_python_scalar(parsed_ts, spark_type))
                 elif isinstance(spark_type, DoubleType):
-                    columns[name].append(self._to_float(raw_val))
+                    # Convert to float and coerce to pure Python float
+                    float_val = self._to_float(raw_val)
+                    columns[name].append(self._to_python_scalar(float_val, spark_type))
                 else:
-                    columns[name].append(raw_val if raw_val else None)
+                    # Coerce all other values to pure Python types
+                    columns[name].append(self._to_python_scalar(raw_val, spark_type))
 
-        # Create Arrow arrays
+        # Create Arrow arrays - PyArrow will handle conversion from Python types
         arrays = []
         for name, spark_type in fields:
             if isinstance(spark_type, TimestampType):
+                # Arrow expects Python datetime objects, which we've ensured via coercion
                 arrays.append(pa.array(columns[name], type=pa.timestamp('us')))
             elif isinstance(spark_type, DoubleType):
+                # Arrow expects Python float, which we've ensured via coercion
                 arrays.append(pa.array(columns[name], type=pa.float64()))
             else:
+                # String and other types
                 arrays.append(pa.array(columns[name], type=pa.string()))
 
         return pa.RecordBatch.from_arrays(arrays, schema=arrow_schema)
@@ -730,38 +768,234 @@ class NemwebArrowReader(DataSourceReader):
 
         return rows
 
-    def _parse_timestamp(self, ts_str: str) -> Optional[datetime]:
-        """Parse NEMWEB timestamp to Python datetime."""
-        if not ts_str:
+    def _to_python_scalar(self, v: any, spark_type: any = None) -> any:
+        """
+        Coerce any value to a pure Python native type.
+
+        This ensures compatibility with Serverless Arrow fast path which requires
+        exact Python types (datetime.datetime, not pandas.Timestamp or numpy.datetime64).
+
+        Args:
+            v: Value to coerce
+            spark_type: Optional Spark type hint for better conversion
+
+        Returns:
+            Pure Python scalar (datetime.datetime, float, int, str, bool, None)
+        """
+        # None passes through
+        if v is None:
             return None
 
-        ts_str = str(ts_str).strip()
-        if not ts_str:
-            return None
+        # Timestamp-like -> datetime.datetime
+        if isinstance(v, datetime):
+            # Ensure tz-naive
+            if v.tzinfo is not None:
+                import datetime as dt
+                return v.astimezone(dt.timezone.utc).replace(tzinfo=None)
+            return v
 
-        formats = [
-            "%Y/%m/%d %H:%M:%S",
-            "%Y-%m-%d %H:%M:%S",
-            "%Y/%m/%d %H:%M",
-            "%Y-%m-%d %H:%M",
-        ]
+        # Handle pandas Timestamp
+        try:
+            import pandas as pd
+            if isinstance(v, pd.Timestamp):
+                if pd.isna(v):
+                    return None
+                # Convert to tz-naive if needed
+                if v.tz is not None:
+                    v = v.tz_convert(None)
+                return v.to_pydatetime()
+        except (ImportError, AttributeError):
+            pass
 
-        for fmt in formats:
+        # Handle numpy datetime64
+        try:
+            import numpy as np
+            if isinstance(v, (np.datetime64,)):
+                import pandas as pd
+                ts = pd.to_datetime(v, utc=False)
+                if pd.isna(ts):
+                    return None
+                return ts.to_pydatetime()
+        except (ImportError, AttributeError):
+            pass
+
+        # Handle numpy numeric types -> Python types
+        try:
+            import numpy as np
+            if isinstance(v, (np.float32, np.float64)):
+                return float(v)
+            if isinstance(v, (np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16, np.uint32, np.uint64)):
+                return int(v)
+            if isinstance(v, np.bool_):
+                return bool(v)
+        except (ImportError, AttributeError):
+            pass
+
+        # Handle pandas numeric types
+        try:
+            import pandas as pd
+            if isinstance(v, (pd.Float64Dtype, pd.Int64Dtype)):
+                if pd.isna(v):
+                    return None
+                return float(v) if isinstance(v, pd.Float64Dtype) else int(v)
+        except (ImportError, AttributeError):
+            pass
+
+        # Handle bytes-like objects
+        if hasattr(v, 'tobytes'):
             try:
-                return datetime.strptime(ts_str, fmt)
-            except ValueError:
-                continue
+                return v.tobytes()
+            except (AttributeError, TypeError):
+                pass
+
+        # String handling - ensure pure str
+        if isinstance(v, str):
+            return v
+
+        # For TimestampType columns, try parsing as timestamp string
+        if spark_type and isinstance(spark_type, TimestampType):
+            if isinstance(v, str):
+                parsed = self._parse_timestamp(v)
+                if parsed is not None:
+                    return parsed
+
+        # Default: return as-is (assume already Python-native)
+        return v
+
+    def _parse_timestamp(self, ts_str) -> Optional[datetime]:
+        """
+        Parse NEMWEB timestamp to tz-naive datetime.datetime.
+
+        Returns None only if parsing fails completely.
+        Ensures the returned value is a proper datetime.datetime object
+        (not numpy.datetime64, pandas.Timestamp, or tz-aware datetime).
+        """
+        if ts_str is None:
+            return None
+
+        # Handle string input (most common case from CSV parsing)
+        if isinstance(ts_str, str):
+            ts_str = ts_str.strip()
+            if not ts_str:
+                return None
+
+            formats = [
+                "%Y/%m/%d %H:%M:%S",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y/%m/%d %H:%M",
+                "%Y-%m-%d %H:%M",
+            ]
+
+            for fmt in formats:
+                try:
+                    return datetime.strptime(ts_str, fmt)
+                except ValueError:
+                    continue
+
+            return None
+
+        # Handle datetime.datetime (ensure tz-naive)
+        if isinstance(ts_str, datetime):
+            if ts_str.tzinfo is not None:
+                # Convert to UTC and make tz-naive
+                import datetime as dt
+                return ts_str.astimezone(dt.timezone.utc).replace(tzinfo=None)
+            return ts_str
+
+        # Handle other types that might sneak through
+        try:
+            import pandas as pd
+            if isinstance(ts_str, pd.Timestamp):
+                if pd.isna(ts_str):
+                    return None
+                if ts_str.tz is not None:
+                    ts_str = ts_str.tz_convert(None)
+                return ts_str.to_pydatetime()
+        except (ImportError, AttributeError):
+            pass
+
+        try:
+            import numpy as np
+            if isinstance(ts_str, np.datetime64):
+                import pandas as pd
+                ts = pd.to_datetime(ts_str, utc=False)
+                if pd.isna(ts):
+                    return None
+                return ts.to_pydatetime()
+        except (ImportError, AttributeError):
+            pass
 
         return None
 
     def _to_float(self, val) -> Optional[float]:
-        """Convert string to float."""
+        """
+        Convert value to pure Python float.
+
+        Handles strings, numbers, and numpy/pandas numeric types.
+        Returns None for invalid values.
+        """
         if val is None or val == "":
             return None
+
+        # Already a Python float
+        if isinstance(val, float):
+            return val
+
+        # Handle numpy/pandas numeric types
+        try:
+            import numpy as np
+            if isinstance(val, (np.float32, np.float64)):
+                return float(val)
+        except (ImportError, AttributeError):
+            pass
+
+        try:
+            import pandas as pd
+            if isinstance(val, pd.Float64Dtype):
+                if pd.isna(val):
+                    return None
+                return float(val)
+        except (ImportError, AttributeError):
+            pass
+
+        # Try converting string/number to float
         try:
             return float(val)
         except (ValueError, TypeError):
             return None
+
+    def _row_to_tuple(self, row: dict, fields: list) -> tuple:
+        """
+        Convert a row dict to a tuple with proper type conversion.
+
+        All values are coerced to pure Python types to ensure Serverless Arrow
+        fast path compatibility. Timestamps must be datetime.datetime objects,
+        not pandas.Timestamp or numpy.datetime64.
+
+        Returns None if required timestamp field (SETTLEMENTDATE) cannot be parsed,
+        since Spark's timestamp converter requires datetime.datetime objects.
+        """
+        values = []
+        for name, spark_type in fields:
+            raw_val = row.get(name)
+
+            if isinstance(spark_type, TimestampType):
+                # Parse timestamp first
+                parsed_ts = self._parse_timestamp(raw_val)
+                # Skip rows with unparseable timestamps - Spark requires datetime objects
+                if parsed_ts is None and name == "SETTLEMENTDATE":
+                    return None
+                # Ensure it's a pure Python datetime (coerce any non-native types)
+                values.append(self._to_python_scalar(parsed_ts, spark_type))
+            elif isinstance(spark_type, DoubleType):
+                # Convert to float and ensure it's Python float (not numpy)
+                float_val = self._to_float(raw_val)
+                values.append(self._to_python_scalar(float_val, spark_type))
+            else:
+                # Coerce all other values to ensure pure Python types
+                values.append(self._to_python_scalar(raw_val, spark_type))
+
+        return tuple(values)
 
 
 class NemwebArrowDataSource(DataSource):
