@@ -194,27 +194,53 @@ class NemwebArrowReader(DataSourceReader):
             return self._http_partitions()
 
     def _volume_partitions(self) -> list[InputPartition]:
-        """Create one partition per ZIP file in volume."""
+        """Create one partition per ZIP file in volume, filtered by date range."""
         import os
+        import re
 
         # Use file prefix (dispatchis, tradingis) as folder name, not table name
         # This allows DISPATCHREGIONSUM and DISPATCHPRICE to share the same files
         _, file_prefix = TABLE_TO_FOLDER.get(self.table, ("DispatchIS_Reports", "DISPATCHIS"))
         base_path = os.path.join(self.volume_path, file_prefix.lower())
 
+        # Parse date range for filtering
+        start = datetime.strptime(self.start_date, "%Y-%m-%d")
+        end = datetime.strptime(self.end_date, "%Y-%m-%d")
+
+        # Build set of valid date strings (YYYYMMDD format)
+        valid_dates = set()
+        current = start
+        while current <= end:
+            valid_dates.add(current.strftime("%Y%m%d"))
+            current += timedelta(days=1)
+
+        # Regex patterns for file date extraction
+        # Archive: PUBLIC_DISPATCHIS_YYYYMMDD.zip
+        # Current: PUBLIC_DISPATCHIS_YYYYMMDDHHMM_seq.zip
+        archive_pattern = re.compile(rf'PUBLIC_{file_prefix}_(\d{{8}})\.zip', re.IGNORECASE)
+        current_pattern = re.compile(rf'PUBLIC_{file_prefix}_(\d{{8}})\d{{4}}_\d+\.zip', re.IGNORECASE)
+
         # Collect files from both archive and current subfolders
         files = []
         for subfolder in ["archive", "current"]:
             folder_path = os.path.join(base_path, subfolder)
             if os.path.exists(folder_path):
-                files.extend([
-                    os.path.join(folder_path, f)
-                    for f in os.listdir(folder_path)
-                    if f.endswith('.zip')
-                ])
+                for f in os.listdir(folder_path):
+                    if not f.endswith('.zip'):
+                        continue
+
+                    # Extract date from filename
+                    file_date = None
+                    match = archive_pattern.match(f) or current_pattern.match(f)
+                    if match:
+                        file_date = match.group(1)
+
+                    # Include file if date is in range (or if we couldn't parse date)
+                    if file_date is None or file_date in valid_dates:
+                        files.append(os.path.join(folder_path, f))
 
         files = sorted(files)
-        logger.info(f"Found {len(files)} ZIP files in {base_path}")
+        logger.info(f"Found {len(files)} ZIP files in {base_path} for date range {self.start_date} to {self.end_date}")
 
         return [
             NemwebArrowPartition(table=self.table, file_path=f)
