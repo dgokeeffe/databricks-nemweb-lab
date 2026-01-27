@@ -39,7 +39,7 @@
   - Delta Lake available. [datacamp](https://www.datacamp.com/tutorial/delta-lake)
   - Databricks AI features enabled:
     - AI/BI Genie. [docs.databricks](https://docs.databricks.com/aws/en/genie/)
-    - Databricks Assistant in SQL Editor and notebooks. [learn.microsoft](https://learn.microsoft.com/en-us/azure/databricks/notebooks/databricks-assistant-faq)
+    - Databricks Assistant in SQL Editor and notebooks. [learn.microsoft](https://learn.microsoft.com/en-us/azure/databricks/exercises/databricks-assistant-faq)
   - Databricks SQL (or SQL Warehouse) for BI connectivity.
 - (Optional) Power BI Desktop installed on presenter’s machine and able to connect to Databricks. [beyondkey](https://www.beyondkey.com/blog/databricks-integration-with-power-bi/)
 
@@ -60,7 +60,7 @@ By the end of the session, attendees should:
 1. Understand, at a high level, how Databricks One and the lakehouse support NEM‑driven trading analytics. [docs.databricks](https://docs.databricks.com/aws/en/lakehouse-architecture/)
 2. Recognise a curated NEM table in Unity Catalog as a **single, governed source** instead of ad‑hoc CSVs. [docs.databricks](https://docs.databricks.com/aws/en/data-governance/unity-catalog/get-started)
 3. See how AI/BI Genie can answer typical Trading Analytics questions in natural language over curated data. [learn.microsoft](https://learn.microsoft.com/en-us/azure/databricks/genie/)
-4. See how Databricks Assistant can help generate/refine SQL for new metrics/queries without deep SQL expertise. [docs.databricks](https://docs.databricks.com/aws/en/notebooks/use-databricks-assistant)
+4. See how Databricks Assistant can help generate/refine SQL for new metrics/queries without deep SQL expertise. [docs.databricks](https://docs.databricks.com/aws/en/exercises/use-databricks-assistant)
 5. Grasp that metric views define official KPIs (avg price, volatility, peak demand) once and can feed Genie, dashboards, and Power BI. [advancinganalytics.co](https://www.advancinganalytics.co.uk/blog/simplifying-analytics-with-metric-views-in-databricks)
 6. Understand that Power BI can connect directly to Databricks as a live, governed data source. [cdata](https://www.cdata.com/kb/tech/databricks-powerbi-gateway.rst)
 
@@ -192,7 +192,7 @@ Configure roles:
 
 ### 4.5 Databricks Assistant
 
-Requirements: [docs.databricks](https://docs.databricks.com/aws/en/notebooks/databricks-assistant-faq)
+Requirements: [docs.databricks](https://docs.databricks.com/aws/en/exercises/databricks-assistant-faq)
 
 - Assistant enabled in:
   - SQL Editor.
@@ -220,7 +220,7 @@ Key points:
 - AGL is driving more data & AI capabilities and cloud‑based analytics. [itnews.com](https://www.itnews.com.au/news/agl-energy-is-becoming-more-data-driven-with-its-workforce-planning-612067)
 - Databricks is:
   - The place where NEM and trading data is ingested, cleaned, and governed (Delta + Unity Catalog). [learn.microsoft](https://learn.microsoft.com/en-us/azure/databricks/lakehouse/)
-  - Where AI tools (Genie, Assistant) help you ask questions and write queries. [docs.databricks](https://docs.databricks.com/aws/en/notebooks/code-assistant)
+  - Where AI tools (Genie, Assistant) help you ask questions and write queries. [docs.databricks](https://docs.databricks.com/aws/en/exercises/code-assistant)
   - A backend that can feed Power BI, not a replacement for it. [databricks](https://www.databricks.com/blog/enabling-business-users-databricks)
 
 Outcome: mental model = “Databricks behind the scenes; Excel/Power BI + AI at the front.”
@@ -294,7 +294,7 @@ Demo (SQL Editor):
 
    > “Write a SQL query over `agldata.trading.curated_nem_prices` that, for the last 7 days, returns average price, price volatility, and peak demand by region, ordered by average price descending.”
 
-3. Review SQL, run, show table of results. [learn.microsoft](https://learn.microsoft.com/en-us/azure/databricks/notebooks/databricks-assistant-faq)
+3. Review SQL, run, show table of results. [learn.microsoft](https://learn.microsoft.com/en-us/azure/databricks/exercises/databricks-assistant-faq)
 4. Refinement prompt:
 
    > “Modify this query so it only includes NSW1 and QLD1 and shows daily values instead of overall 7‑day aggregates.”

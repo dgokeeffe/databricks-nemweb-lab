@@ -16,7 +16,7 @@ import io
 import logging
 import zipfile
 from datetime import datetime, timedelta
-from typing import Iterator, Tuple, Optional, TYPE_CHECKING
+from typing import Iterator, Optional, TYPE_CHECKING
 from urllib.request import urlopen, Request
 from urllib.error import HTTPError, URLError
 
@@ -25,15 +25,12 @@ if TYPE_CHECKING:
     from pyspark.sql.types import StructType
 
 # Import types needed at runtime (not just for type checking)
-from pyspark.sql.types import DoubleType, TimestampType, StringType, IntegerType
+from pyspark.sql.types import DoubleType, TimestampType
 
 logger = logging.getLogger(__name__)
 
 # Version for debugging - increment when making changes
-__version__ = "2.10.16"
-
-# Debug file path - check this in DBFS after errors
-DEBUG_LOG_PATH = "/tmp/nemweb_debug.log"
+__version__ = "2.10.18"
 
 
 def get_version() -> str:
@@ -577,610 +574,230 @@ def _get_sample_data(table: str, region: Optional[str] = None) -> list[dict]:
     return sample
 
 
-def _debug_log(msg: str) -> None:
-    """Write debug message to file and stdout (visible on workers)."""
-    try:
-        # Print to stdout for immediate visibility in Databricks
-        print(f"[NEMWEB_DEBUG] {msg}")
-        # Also write to file for later inspection
-        with open(DEBUG_LOG_PATH, "a") as f:
-            f.write(f"{msg}\n")
-    except Exception as e:
-        # If file write fails, at least try to print
-        try:
-            print(f"[NEMWEB_DEBUG] {msg}")
-        except:
-            pass
-
-
-def _validate_tuple_types(tuple_values: list, schema: "StructType") -> tuple:
-    """
-    Final validation pass to ensure all tuple values match schema types.
-    
-    CRITICAL: Spark's timestamp converter requires datetime.datetime objects.
-    This function ensures no invalid types slip through.
-    
-    Returns:
-        Validated tuple with all timestamp fields guaranteed to be datetime.datetime or None
-    """
-    validated = []
-    
-    for field, value in zip(schema.fields, tuple_values):
-        if isinstance(field.dataType, TimestampType):
-            # Timestamp must be datetime.datetime or None - NO EXCEPTIONS
-            if value is None:
-                validated.append(None)
-            elif isinstance(value, datetime):
-                # Already correct type - ensure tz-naive
-                if value.tzinfo is not None:
-                    import datetime as dt
-                    validated.append(value.astimezone(dt.timezone.utc).replace(tzinfo=None))
-                else:
-                    validated.append(value)
-            else:
-                # NOT a datetime - try aggressive conversion, then set to None if it fails
-                converted_value = None
-                try:
-                    # Try parsing as string first
-                    if isinstance(value, str):
-                        converted_value = _parse_timestamp_value(value)
-                    else:
-                        # Try coercion
-                        converted_value = _to_python_scalar(value, TimestampType())
-                    
-                    # Verify conversion succeeded
-                    if converted_value is not None and isinstance(converted_value, datetime):
-                        # Ensure tz-naive
-                        if converted_value.tzinfo is not None:
-                            import datetime as dt
-                            converted_value = converted_value.astimezone(dt.timezone.utc).replace(tzinfo=None)
-                        validated.append(converted_value)
-                    else:
-                        # Conversion failed - set to None
-                        validated.append(None)
-                except Exception:
-                    # Any exception during conversion - set to None
-                    validated.append(None)
-        else:
-            validated.append(value)
-    
-    # FINAL ASSERTION: Verify all timestamp fields are datetime or None
-    result = tuple(validated)
-    for field, val in zip(schema.fields, result):
-        if isinstance(field.dataType, TimestampType):
-            if val is not None and not isinstance(val, datetime):
-                # This should never happen, but if it does, return None to skip row
-                return None
-    
-    return result
-
-
-def parse_nemweb_csv(data: list[dict], schema: "StructType", return_rows: bool = True) -> Iterator["Row"]:
+def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator["Row"]:
     """
     Parse NEMWEB data and yield Row objects matching the Spark schema.
 
-    All values are coerced to pure Python types for Serverless Arrow compatibility.
-    Timestamps are returned as datetime.datetime objects (not pandas/numpy types).
+    Uses simple type conversion - timestamps are parsed to datetime.datetime,
+    numbers to float, everything else to string.
 
     Args:
-        data: List of dictionaries from CSV
-        schema: Spark StructType to match
-        return_rows: If True (default), yield Row objects. If False, yield tuples (legacy).
+        data: List of dictionaries from fetch_nemweb_current()
+        schema: Spark StructType defining the output columns
 
     Yields:
-        Row objects with values matching schema field names (all pure Python types)
-        
-    Note:
-        Row objects are recommended for Spark Connect/Serverless. Only use tuples=False
-        for legacy compatibility or when integrating with Arrow RecordBatch objects.
+        Row objects with values matching schema field names
     """
-    _debug_log(f"=== parse_nemweb_csv v{__version__} started ===")
-    _debug_log(f"Processing {len(data)} rows")
-    _debug_log(f"Schema has {len(schema.fields)} fields")
-    
-    # Debug: Check datetime import paths
-    import datetime as dt_module_check
-    _debug_log(f"datetime module path: {datetime.__module__}")
-    _debug_log(f"dt_module.datetime path: {dt_module_check.datetime.__module__}")
-    _debug_log(f"datetime class id: {id(datetime)}")
-    _debug_log(f"dt_module.datetime class id: {id(dt_module_check.datetime)}")
+    from pyspark.sql import Row
 
     field_names = [field.name for field in schema.fields]
     field_types = {field.name: field.dataType for field in schema.fields}
 
-    row_num = 0
     for row in data:
-        row_num += 1
-        try:
-            if row_num <= 3:
-                _debug_log(f"Row {row_num}: Starting processing")
-            values = []
-            skip_row = False
-            
-            for name in field_names:
-                raw_value = row.get(name)
+        values = {}
+        skip_row = False
 
-                if raw_value is None or raw_value == "":
-                    values.append(None)
-                else:
-                    # Match Arrow datasource approach: parse timestamp FIRST, then coerce
-                    if isinstance(field_types[name], TimestampType):
-                        # Parse timestamp first (matches Arrow datasource _row_to_tuple logic)
-                        parsed_ts = _parse_timestamp_value(raw_value)
-                        # Skip rows with unparseable timestamps for required fields
-                        if parsed_ts is None and name == "SETTLEMENTDATE":
-                            _debug_log(f"Row {row_num}: Skipping row - SETTLEMENTDATE cannot be parsed")
-                            _debug_log(f"Row {row_num}: Raw SETTLEMENTDATE value: {repr(raw_value)}")
-                            _debug_log(f"Row {row_num}: Raw SETTLEMENTDATE type: {type(raw_value).__name__}")
-                            skip_row = True
-                            break
-                        # Ensure it's a pure Python datetime (coerce any non-native types)
-                        final_val = _to_python_scalar(parsed_ts, TimestampType())
-                        # Final check - must be datetime or None
-                        if final_val is not None and not isinstance(final_val, datetime):
-                            _debug_log(f"Row {row_num}: CRITICAL - {name} coercion failed: {type(final_val).__name__}")
-                            # Set to None instead of skipping (Spark handles None)
-                            final_val = None
-                        values.append(final_val)
-                    elif isinstance(field_types[name], DoubleType):
-                        # Convert to float and ensure it's Python float (not numpy)
-                        converted = _convert_value(raw_value, field_types[name])
-                        final_val = _to_python_scalar(converted, field_types[name])
-                        values.append(final_val)
-                    else:
-                        # Coerce all other values to ensure pure Python types
-                        converted = _convert_value(raw_value, field_types[name])
-                        final_val = _to_python_scalar(converted, field_types[name])
-                        values.append(final_val)
-            
-            # Skip rows with invalid timestamps
-            if skip_row:
-                _debug_log(f"Row {row_num}: SKIPPED (skip_row=True)")
-                continue
+        for name in field_names:
+            raw = row.get(name)
 
-            # FINAL VALIDATION: Double-check all timestamp fields are datetime or None
-            # This is a critical safeguard to prevent Spark assertion errors
-            for idx, (field, value) in enumerate(zip(schema.fields, values)):
-                if isinstance(field.dataType, TimestampType):
-                    if value is not None:
-                        # Force conversion if somehow still not a datetime
-                        if not isinstance(value, datetime):
-                            _debug_log(f"Row {row_num}: CRITICAL - Field {field.name} (idx {idx}) is {type(value).__name__}, not datetime! Value: {value}")
-                            # Try one more conversion attempt
-                            try:
-                                if isinstance(value, str):
-                                    value = _parse_timestamp_value(value)
-                                else:
-                                    value = _to_python_scalar(value, TimestampType())
-                                # If still not datetime after conversion, set to None (Spark can handle None)
-                                if value is not None and not isinstance(value, datetime):
-                                    _debug_log(f"Row {row_num}: Failed to convert {field.name} to datetime, setting to None")
-                                    value = None
-                            except Exception as e:
-                                _debug_log(f"Row {row_num}: Exception converting {field.name}: {e}, setting to None")
-                                value = None
-                        # CRITICAL: Update the value in the list (ensure tz-naive)
-                        if value is not None and isinstance(value, datetime):
-                            if value.tzinfo is not None:
-                                import datetime as dt
-                                value = value.astimezone(dt.timezone.utc).replace(tzinfo=None)
-                        values[idx] = value
-                    else:
-                        # Ensure None is explicitly set
-                        values[idx] = None
-            
-            # Skip row if final validation failed
-            if skip_row:
-                _debug_log(f"Row {row_num}: SKIPPED after final validation (skip_row=True)")
-                continue
+            if raw is None or raw == "":
+                values[name] = None
+            elif isinstance(field_types[name], TimestampType):
+                parsed = _parse_timestamp_value(raw)
+                if parsed is None and name == "SETTLEMENTDATE":
+                    skip_row = True
+                    break
+                values[name] = parsed
+            elif isinstance(field_types[name], DoubleType):
+                try:
+                    values[name] = float(raw)
+                except (ValueError, TypeError):
+                    values[name] = None
+            else:
+                values[name] = str(raw) if raw else None
 
-            # Final tuple validation - ensures all types are correct
-            validated_tuple = _validate_tuple_types(values, schema)
-            if validated_tuple is None:
-                _debug_log(f"Row {row_num}: Tuple validation failed, skipping")
-                continue
-
-            # CRITICAL FINAL CHECK: Verify tuple one more time before yielding
-            # This is the absolute last chance to catch any invalid values
-            final_values = []
-            skip_final = False
-            
-            for idx, (field, val) in enumerate(zip(schema.fields, validated_tuple)):
-                if isinstance(field.dataType, TimestampType):
-                    if val is None:
-                        final_values.append(None)
-                    elif isinstance(val, datetime):
-                        # Ensure tz-naive
-                        if val.tzinfo is not None:
-                            import datetime as dt
-                            final_values.append(val.astimezone(dt.timezone.utc).replace(tzinfo=None))
-                        else:
-                            final_values.append(val)
-                    else:
-                        # CRITICAL: This should NEVER happen, but if it does, set to None
-                        _debug_log(f"Row {row_num}: FATAL ERROR - timestamp {field.name} is {type(val).__name__}, not datetime! Value: {val}")
-                        _debug_log(f"Row {row_num}: This indicates a bug - all validation failed. Setting to None.")
-                        final_values.append(None)  # Set to None instead of skipping
-                else:
-                    final_values.append(val)
-            
-            validated_tuple = tuple(final_values)
-
-            # Debug first few rows - verify timestamp types
-            if row_num <= 3:
-                ts_field_idx = None
-                for idx, field in enumerate(schema.fields):
-                    if isinstance(field.dataType, TimestampType):
-                        ts_field_idx = idx
-                        break
-                if ts_field_idx is not None:
-                    ts_val = validated_tuple[ts_field_idx]
-                    ts_type = type(ts_val).__name__ if ts_val is not None else "None"
-                    _debug_log(f"Row {row_num} timestamp[{ts_field_idx}]: type={ts_type}, val={ts_val}")
-
-            # CRITICAL: Final type check before yielding - Spark's Arrow serializer
-            # requires exact datetime.datetime instances (not subclasses or wrappers)
-            # Spark Connect's conversion.py line 299 checks: assert isinstance(value, datetime.datetime)
-            # Ensure we're returning the exact datetime.datetime class, not a subclass
-            final_tuple_values = []
-            for idx, (field, val) in enumerate(zip(schema.fields, validated_tuple)):
-                if isinstance(field.dataType, TimestampType):
-                    if val is None:
-                        final_tuple_values.append(None)
-                    elif isinstance(val, datetime):
-                        # CRITICAL: Spark's conversion.py line 299 checks isinstance(value, datetime.datetime)
-                        # where datetime is imported as "import datetime" (not "from datetime import datetime")
-                        # 
-                        # Spark expects timezone-naive datetime.datetime objects, then converts them to UTC.
-                        # The assertion happens BEFORE conversion, so we must pass naive datetimes.
-                        # 
-                        # The issue: Spark Connect may serialize/unpickle datetime objects in a way that breaks
-                        # isinstance checks. We need to ensure the datetime is created using the exact import
-                        # path Spark uses: datetime.datetime (from "import datetime")
-                        import datetime as dt_module
-                        
-                        # Ensure tz-naive (Spark expects naive, then converts to UTC)
-                        if val.tzinfo is not None:
-                            val = val.astimezone(dt_module.timezone.utc).replace(tzinfo=None)
-                        
-                        # CRITICAL: Use dt_module.datetime to match Spark's import path exactly
-                        # Spark uses "import datetime" so it checks isinstance(value, datetime.datetime)
-                        # We need to create datetime using the same module reference Spark uses
-                        final_dt = dt_module.datetime(val.year, val.month, val.day,
-                                                      val.hour, val.minute, val.second,
-                                                      val.microsecond)
-                        
-                        # Extensive debugging for first few rows
-                        if row_num <= 3:
-                            _debug_log(f"Row {row_num}: === DATETIME DEBUG ===")
-                            _debug_log(f"Row {row_num}: Original val = {val}, type = {type(val)}")
-                            _debug_log(f"Row {row_num}: Created final_dt = {final_dt}, type = {type(final_dt)}")
-                            _debug_log(f"Row {row_num}: type(final_dt).__module__ = {type(final_dt).__module__}")
-                            _debug_log(f"Row {row_num}: type(final_dt).__name__ = {type(final_dt).__name__}")
-                            _debug_log(f"Row {row_num}: isinstance(final_dt, datetime) = {isinstance(final_dt, datetime)}")
-                            _debug_log(f"Row {row_num}: isinstance(final_dt, dt_module.datetime) = {isinstance(final_dt, dt_module.datetime)}")
-                            _debug_log(f"Row {row_num}: type(final_dt) is datetime = {type(final_dt) is datetime}")
-                            _debug_log(f"Row {row_num}: type(final_dt) is dt_module.datetime = {type(final_dt) is dt_module.datetime}")
-                            _debug_log(f"Row {row_num}: datetime module = {datetime.__module__}")
-                            _debug_log(f"Row {row_num}: dt_module.datetime module = {dt_module.datetime.__module__}")
-                            _debug_log(f"Row {row_num}: datetime class id = {id(datetime)}")
-                            _debug_log(f"Row {row_num}: dt_module.datetime class id = {id(dt_module.datetime)}")
-                            _debug_log(f"Row {row_num}: final_dt class id = {id(type(final_dt))}")
-                        
-                        final_tuple_values.append(final_dt)
-                    else:
-                        _debug_log(f"Row {row_num}: CRITICAL - timestamp at idx {idx} is {type(val)}, not datetime! Setting to None")
-                        final_tuple_values.append(None)
-                else:
-                    final_tuple_values.append(val)
-            
-            final_tuple = tuple(final_tuple_values)
-            
-            # Debug: Verify datetime types one final time before yielding
-            for idx, (field, val) in enumerate(zip(schema.fields, final_tuple)):
-                if isinstance(field.dataType, TimestampType):
-                    if val is not None:
-                        # Verify it's exactly datetime.datetime
-                        dt_type = type(val)
-                        dt_type_name = dt_type.__name__
-                        dt_module = dt_type.__module__
-                        is_datetime_instance = isinstance(val, datetime)
-                        _debug_log(f"Row {row_num}: Timestamp[{idx}] = {val}, "
-                                  f"type={dt_type_name}, module={dt_module}, "
-                                  f"isinstance(datetime)={is_datetime_instance}, "
-                                  f"type is datetime={dt_type is datetime}")
-            
-            _debug_log(f"Row {row_num}: YIELDING {'Row' if return_rows else 'tuple'} with {len(final_tuple)} values")
-            
-            # Try to yield and catch any serialization errors
-            try:
-                if return_rows:
-                    # Yield Row object (default, recommended for Spark Connect)
-                    from pyspark.sql import Row
-                    # Create Row with field names as keyword arguments
-                    row_dict = {field.name: val for field, val in zip(schema.fields, final_tuple)}
-                    row_obj = Row(**row_dict)
-                    yield row_obj
-                else:
-                    # Yield tuple (legacy approach - only for special cases)
-                    yield final_tuple
-            except Exception as yield_error:
-                _debug_log(f"Row {row_num}: YIELD ERROR - {type(yield_error).__name__}: {yield_error}")
-                # Try to identify which field is causing the issue
-                for idx, (field, val) in enumerate(zip(schema.fields, final_tuple)):
-                    if isinstance(field.dataType, TimestampType):
-                        _debug_log(f"Row {row_num}: Field[{idx}] {field.name} = {val}, type = {type(val)}")
-                raise
-
-        except Exception as e:
-            _debug_log(f"ROW {row_num} ERROR: {type(e).__name__}: {e}")
-            import traceback
-            _debug_log(f"ROW {row_num} TRACEBACK: {traceback.format_exc()}")
-            continue
-
-    _debug_log(f"=== parse_nemweb_csv complete: processed {row_num} input rows ===")
-    # Count how many tuples were actually yielded (for debugging)
-    # Note: This won't be accurate since we can't count yields, but we log skipped rows
+        if not skip_row:
+            yield Row(**values)
 
 
-def _to_python_scalar(v: any, spark_type: any = None) -> any:
+def parse_nemweb_to_arrow(data: list[dict], schema: "StructType") -> "pa.RecordBatch":
     """
-    Coerce any value to a pure Python native type.
+    Parse NEMWEB data to a PyArrow RecordBatch for Serverless compatibility.
 
-    This ensures compatibility with Serverless Arrow fast path which requires
-    exact Python types (datetime.datetime, not pandas.Timestamp or numpy.datetime64).
+    The PySpark Data Source API requires PyArrow RecordBatches when running on
+    Serverless/Spark Connect. This function converts parsed NEMWEB data directly
+    to Arrow format, bypassing Row objects which can cause serialization issues.
+
+    All values are coerced to pure Python types before creating Arrow arrays
+    to ensure Serverless Arrow fast path compatibility.
 
     Args:
-        v: Value to coerce
-        spark_type: Optional Spark type hint for better conversion
+        data: List of dictionaries from fetch_nemweb_current()
+        schema: Spark StructType defining the output columns
 
     Returns:
-        Pure Python scalar (datetime.datetime, float, int, str, bool, None)
+        PyArrow RecordBatch with data matching the schema
     """
-    # None passes through
-    if v is None:
+    import pyarrow as pa
+    from pyspark.sql.types import StringType
+
+    field_names = [field.name for field in schema.fields]
+    field_types = {field.name: field.dataType for field in schema.fields}
+
+    # Initialize column arrays
+    columns = {name: [] for name in field_names}
+
+    for row in data:
+        skip_row = False
+
+        # First pass - check if we need to skip this row
+        for name in field_names:
+            if isinstance(field_types[name], TimestampType) and name == "SETTLEMENTDATE":
+                raw = row.get(name)
+                if raw is None or raw == "":
+                    skip_row = True
+                    break
+                parsed = _parse_timestamp_value(raw)
+                if parsed is None:
+                    skip_row = True
+                    break
+
+        if skip_row:
+            continue
+
+        # Second pass - populate columns
+        for name in field_names:
+            raw = row.get(name)
+
+            if raw is None or raw == "":
+                columns[name].append(None)
+            elif isinstance(field_types[name], TimestampType):
+                parsed = _parse_timestamp_value(raw)
+                columns[name].append(_to_python_datetime(parsed))
+            elif isinstance(field_types[name], DoubleType):
+                columns[name].append(_to_python_float(raw))
+            else:
+                columns[name].append(str(raw) if raw else None)
+
+    # Build Arrow schema and arrays
+    arrow_fields = []
+    arrays = []
+
+    for name in field_names:
+        spark_type = field_types[name]
+
+        if isinstance(spark_type, TimestampType):
+            arrow_fields.append(pa.field(name, pa.timestamp('us')))
+            arrays.append(pa.array(columns[name], type=pa.timestamp('us')))
+        elif isinstance(spark_type, DoubleType):
+            arrow_fields.append(pa.field(name, pa.float64()))
+            arrays.append(pa.array(columns[name], type=pa.float64()))
+        else:
+            arrow_fields.append(pa.field(name, pa.string()))
+            arrays.append(pa.array(columns[name], type=pa.string()))
+
+    arrow_schema = pa.schema(arrow_fields)
+    return pa.RecordBatch.from_arrays(arrays, schema=arrow_schema)
+
+
+def _to_python_datetime(val) -> Optional[datetime]:
+    """
+    Ensure value is a pure Python datetime.datetime.
+
+    Serverless Arrow fast path requires exact Python-native types,
+    not pandas.Timestamp or numpy.datetime64.
+    """
+    if val is None:
         return None
 
-    # Timestamp-like -> datetime.datetime
-    if isinstance(v, datetime):
+    # Already a Python datetime
+    if isinstance(val, datetime):
         # Ensure tz-naive
-        if v.tzinfo is not None:
-            import datetime as dt
-            return v.astimezone(dt.timezone.utc).replace(tzinfo=None)
-        return v
+        if val.tzinfo is not None:
+            return val.replace(tzinfo=None)
+        return val
 
     # Handle pandas Timestamp
     try:
         import pandas as pd
-        if isinstance(v, pd.Timestamp):
-            if pd.isna(v):
+        if isinstance(val, pd.Timestamp):
+            if pd.isna(val):
                 return None
-            # Convert to tz-naive if needed
-            if v.tz is not None:
-                v = v.tz_convert(None)
-            return v.to_pydatetime()
-    except (ImportError, AttributeError):
+            if val.tz is not None:
+                val = val.tz_convert(None)
+            return val.to_pydatetime()
+    except ImportError:
         pass
 
     # Handle numpy datetime64
     try:
         import numpy as np
-        if isinstance(v, (np.datetime64,)):
-            # Explicitly check for NaT first
-            if np.isnat(v):
-                return None
-            # Convert via pandas for reliable handling
-            try:
-                import pandas as pd
-                ts = pd.to_datetime(v, utc=False)
-                if pd.isna(ts):
-                    return None
-                return ts.to_pydatetime()
-            except Exception:
-                # Fallback: convert to string and parse
-                try:
-                    ts_str = np.datetime_as_string(v, unit='us', timezone='naive')
-                    return datetime.fromisoformat(ts_str.replace('Z', ''))
-                except Exception:
-                    return None
-    except (ImportError, AttributeError):
-        pass
-
-    # Handle numpy numeric types -> Python types
-    try:
-        import numpy as np
-        if isinstance(v, (np.float32, np.float64)):
-            return float(v)
-        if isinstance(v, (np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16, np.uint32, np.uint64)):
-            return int(v)
-        if isinstance(v, np.bool_):
-            return bool(v)
-        # Handle generic numpy integer/floating (broader check)
-        if isinstance(v, np.integer):
-            return int(v)
-        if isinstance(v, np.floating):
-            return float(v)
-    except (ImportError, AttributeError):
-        pass
-
-    # Handle pandas numeric types
-    try:
-        import pandas as pd
-        if isinstance(v, (pd.Float64Dtype, pd.Int64Dtype)):
-            if pd.isna(v):
-                return None
-            return float(v) if isinstance(v, pd.Float64Dtype) else int(v)
-    except (ImportError, AttributeError):
-        pass
-
-    # Handle bytes-like objects
-    if hasattr(v, 'tobytes'):
-        try:
-            return v.tobytes()
-        except (AttributeError, TypeError):
-            pass
-
-    # CRITICAL: Check TimestampType BEFORE general string handling
-    # This ensures timestamp strings are parsed, not returned as strings
-    if spark_type:
-        if isinstance(spark_type, TimestampType):
-            # If we already have a datetime, return it
-            if isinstance(v, datetime):
-                return v
-            # If None, return None
-            if v is None:
-                return None
-            # If string, try to parse it
-            if isinstance(v, str):
-                parsed = _parse_timestamp_value(v)
-                if parsed is not None:
-                    return parsed
-                # If parsing failed, return None (Spark can handle None but not invalid types)
-                return None
-            # For any other type with TimestampType, return None to avoid assertion errors
-            # Spark requires datetime.datetime or None, nothing else
-            return None
-
-    # String handling - ensure pure str (only for non-timestamp types)
-    if isinstance(v, str):
-        return v
-
-    # Default: return as-is (assume already Python-native)
-    return v
-
-
-def _convert_value(value, spark_type):
-    """
-    Convert value to appropriate Python type based on Spark type.
-
-    For TimestampType, returns tz-naive datetime.datetime objects.
-    All values are coerced to pure Python types for Serverless compatibility.
-    """
-    # Handle None/empty values
-    if value is None or value == "":
-        return None
-
-    # Convert to string and strip whitespace
-    try:
-        str_value = str(value).strip()
-    except Exception:
-        return None
-
-    if str_value == "":
-        return None
-
-    if isinstance(spark_type, TimestampType):
-        # Parse to datetime.datetime (tz-naive) for Spark compatibility
-        parsed_ts = _parse_timestamp_value(str_value)
-        # Coerce to ensure pure Python datetime
-        result = _to_python_scalar(parsed_ts, spark_type)
-        # CRITICAL: Ensure result is either None or datetime.datetime
-        # Spark's timestamp converter requires datetime.datetime objects
-        if result is not None and not isinstance(result, datetime):
-            # If somehow we got a non-datetime value, try parsing again as fallback
-            if isinstance(result, str):
-                result = _parse_timestamp_value(result)
-            else:
-                # Last resort: return None to skip this row
-                return None
-        return result
-
-    elif isinstance(spark_type, StringType):
-        # For string columns, normalize timestamp format if present
-        if "/" in str_value:
-            str_value = str_value.replace("/", "-")
-        return str_value
-
-    elif isinstance(spark_type, DoubleType):
-        try:
-            float_val = float(str_value)
-            # Coerce to ensure pure Python float (not numpy)
-            return _to_python_scalar(float_val, spark_type)
-        except (ValueError, TypeError):
-            return None
-
-    elif isinstance(spark_type, IntegerType):
-        try:
-            int_val = int(float(str_value))
-            # Coerce to ensure pure Python int (not numpy)
-            return _to_python_scalar(int_val, spark_type)
-        except (ValueError, TypeError):
-            return None
-
-    else:
-        return str_value
-
-
-def _parse_timestamp_value(ts_str: str) -> Optional[datetime]:
-    """
-    Parse timestamp string to tz-naive datetime.datetime.
-    
-    This matches the logic from nemweb_datasource_arrow.py _parse_timestamp()
-    to ensure consistent behavior.
-
-    Returns None only if parsing completely fails.
-    Spark requires datetime.datetime objects for TimestampType columns.
-    
-    Handles both slash and dash formats, and strips quotes/whitespace.
-    """
-    if ts_str is None:
-        return None
-
-    # Handle string input (most common case from CSV parsing)
-    if isinstance(ts_str, str):
-        ts_str = ts_str.strip().strip('"').strip("'").strip()
-        if not ts_str:
-            return None
-
-        formats = [
-            "%Y/%m/%d %H:%M:%S",
-            "%Y-%m-%d %H:%M:%S",
-            "%Y/%m/%d %H:%M",
-            "%Y-%m-%d %H:%M",
-        ]
-
-        for fmt in formats:
-            try:
-                dt = datetime.strptime(ts_str, fmt)
-                # Ensure we return exact datetime.datetime (not a subclass)
-                # Spark's serializer is very strict about this
-                if type(dt) is not datetime:
-                    return datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, dt.microsecond)
-                return dt
-            except ValueError:
-                continue
-
-        return None
-
-    # Handle datetime.datetime (ensure tz-naive)
-    if isinstance(ts_str, datetime):
-        if ts_str.tzinfo is not None:
-            import datetime as dt
-            return ts_str.astimezone(dt.timezone.utc).replace(tzinfo=None)
-        return ts_str
-
-    # Handle other types that might sneak through
-    try:
-        import pandas as pd
-        if isinstance(ts_str, pd.Timestamp):
-            if pd.isna(ts_str):
-                return None
-            if ts_str.tz is not None:
-                ts_str = ts_str.tz_convert(None)
-            return ts_str.to_pydatetime()
-    except (ImportError, AttributeError):
-        pass
-
-    try:
-        import numpy as np
-        if isinstance(ts_str, np.datetime64):
+        if isinstance(val, np.datetime64):
             import pandas as pd
-            ts = pd.to_datetime(ts_str, utc=False)
+            ts = pd.to_datetime(val, utc=False)
             if pd.isna(ts):
                 return None
             return ts.to_pydatetime()
-    except (ImportError, AttributeError):
+    except ImportError:
         pass
+
+    return None
+
+
+def _to_python_float(val) -> Optional[float]:
+    """
+    Ensure value is a pure Python float.
+
+    Handles numpy/pandas numeric types that could cause
+    Arrow serialization issues.
+    """
+    if val is None or val == "":
+        return None
+
+    # Already a Python float
+    if isinstance(val, float):
+        return val
+
+    # Handle numpy types
+    try:
+        import numpy as np
+        if isinstance(val, (np.float32, np.float64)):
+            return float(val)
+        if isinstance(val, (np.integer,)):
+            return float(val)
+    except ImportError:
+        pass
+
+    # Try converting string/number to float
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_timestamp_value(ts_str) -> Optional[datetime]:
+    """
+    Parse timestamp string to datetime.datetime.
+
+    Handles NEMWEB formats: "YYYY/MM/DD HH:MM:SS" and "YYYY-MM-DD HH:MM:SS"
+    """
+    if ts_str is None or ts_str == "":
+        return None
+
+    if isinstance(ts_str, datetime):
+        return ts_str
+
+    if isinstance(ts_str, str):
+        ts_str = ts_str.strip().strip('"').strip("'")
+        if not ts_str:
+            return None
+
+        for fmt in ["%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S",
+                    "%Y/%m/%d %H:%M", "%Y-%m-%d %H:%M"]:
+            try:
+                return datetime.strptime(ts_str, fmt)
+            except ValueError:
+                continue
 
     return None
 

@@ -11,6 +11,8 @@ Sources (readers):
       Educational implementation for learning the Data Source API
     - NemwebArrowDataSource: PyArrow-based reader (format: 'nemweb_arrow')
       Production implementation with auto-download and zero-copy transfer
+    - NemwebStreamDataSource: Streaming reader (format: 'nemweb_stream')
+      Polls CURRENT folder for near-real-time 5-minute dispatch data
     - NemRegistryDataSource: Generator metadata (format: 'nem_registry')
       Station names, fuel types, capacities from OpenNEM
 
@@ -27,6 +29,7 @@ except ImportError:
     NemwebStreamReader = None
 
 from .nemweb_datasource_arrow import NemwebArrowDataSource
+from .nemweb_datasource_stream import NemwebStreamDataSource
 from .nem_registry import NemRegistryDataSource, load_registry_data
 from .nemweb_utils import (
     fetch_nemweb_data,
@@ -41,10 +44,11 @@ from .nemweb_sink import PriceAlertDataSource, MetricsDataSource
 
 __all__ = [
     # Data sources (readers)
-    "NemwebDataSource",      # format: 'nemweb' - educational (may be None)
-    "NemwebArrowDataSource", # format: 'nemweb_arrow' - production
-    "NemRegistryDataSource", # format: 'nem_registry' - generator metadata
-    "NemwebStreamReader",    # may be None
+    "NemwebDataSource",       # format: 'nemweb' - educational (may be None)
+    "NemwebArrowDataSource",  # format: 'nemweb_arrow' - production batch
+    "NemwebStreamDataSource", # format: 'nemweb_stream' - streaming
+    "NemRegistryDataSource",  # format: 'nem_registry' - generator metadata
+    "NemwebStreamReader",     # may be None
     # Data sinks (writers)
     "PriceAlertDataSource",
     "MetricsDataSource",

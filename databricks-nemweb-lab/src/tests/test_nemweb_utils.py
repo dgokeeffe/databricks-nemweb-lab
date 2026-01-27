@@ -23,8 +23,7 @@ from nemweb_utils import (
     fetch_nemweb_current,
     _build_nemweb_url,
     _get_sample_data,
-    _convert_value,
-    _to_python_scalar,
+    _parse_timestamp_value,
     parse_nemweb_csv,
     get_nemweb_schema,
     list_available_tables,
@@ -191,48 +190,27 @@ class TestGetSampleData:
             assert required_fields.issubset(set(row.keys()))
 
 
-class TestConvertValue:
-    """Tests for _convert_value function."""
+class TestParseTimestampValue:
+    """Tests for _parse_timestamp_value function."""
 
-    def test_string_type(self):
-        """Should convert to string."""
-        result = _convert_value("NSW1", StringType())
-        assert result == "NSW1"
-        assert isinstance(result, str)
+    def test_slash_format(self):
+        """Should parse NEMWEB slash format."""
+        result = _parse_timestamp_value("2024/01/15 12:30:00")
+        assert result == datetime(2024, 1, 15, 12, 30, 0)
 
-    def test_double_type(self):
-        """Should convert to float."""
-        result = _convert_value("123.45", DoubleType())
-        assert result == 123.45
-        assert isinstance(result, float)
-
-    def test_integer_type(self):
-        """Should convert to int (truncating decimals)."""
-        result = _convert_value("123.99", IntegerType())
-        assert result == 123
-        assert isinstance(result, int)
-
-    def test_timestamp_slash_format_normalized(self):
-        """Timestamps with slashes should be normalized to dashes (StringType for Serverless)."""
-        result = _convert_value("2024/01/15 12:30:00", StringType())
-        assert isinstance(result, str)
-        assert result == "2024-01-15 12:30:00"
-
-    def test_timestamp_dash_format_preserved(self):
-        """Timestamps with dashes should be preserved (StringType for Serverless)."""
-        result = _convert_value("2024-01-15 12:30:00", StringType())
-        assert isinstance(result, str)
-        assert result == "2024-01-15 12:30:00"
+    def test_dash_format(self):
+        """Should parse dash format."""
+        result = _parse_timestamp_value("2024-01-15 12:30:00")
+        assert result == datetime(2024, 1, 15, 12, 30, 0)
 
     def test_null_value(self):
         """Should return None for null/empty values."""
-        assert _convert_value(None, StringType()) is None
-        assert _convert_value("", DoubleType()) is None
+        assert _parse_timestamp_value(None) is None
+        assert _parse_timestamp_value("") is None
 
-    def test_string_returns_string(self):
-        """StringType always returns string (no timestamp validation)."""
-        result = _convert_value("invalid-date", StringType())
-        assert result == "invalid-date"
+    def test_invalid_format(self):
+        """Should return None for invalid format."""
+        assert _parse_timestamp_value("invalid-date") is None
 
 
 class TestParseNemwebCsv:
@@ -594,104 +572,6 @@ class TestTableToFolderMapping:
         for table, folder in TABLE_TO_FOLDER.items():
             assert isinstance(table, str)
             assert isinstance(folder, str)
-
-
-class TestToPythonScalar:
-    """Tests for _to_python_scalar shim function."""
-
-    def test_none_returns_none(self):
-        """None should pass through."""
-        assert _to_python_scalar(None) is None
-
-    def test_datetime_passes_through(self):
-        """datetime.datetime should pass through."""
-        dt = datetime(2025, 1, 1, 12, 0, 0)
-        result = _to_python_scalar(dt)
-        assert isinstance(result, datetime)
-        assert result == dt
-
-    def test_tz_aware_datetime_converted_to_naive(self):
-        """tz-aware datetime should be converted to naive UTC."""
-        import datetime as dt
-        tz_aware = datetime(2025, 1, 1, 12, 0, 0, tzinfo=dt.timezone.utc)
-        result = _to_python_scalar(tz_aware)
-        assert isinstance(result, datetime)
-        assert result.tzinfo is None
-        assert result == datetime(2025, 1, 1, 12, 0, 0)
-
-    def test_pandas_timestamp_converted(self):
-        """pandas.Timestamp should be converted to datetime.datetime."""
-        try:
-            import pandas as pd
-            ts = pd.Timestamp("2025-01-01 12:00:00")
-            result = _to_python_scalar(ts)
-            assert isinstance(result, datetime)
-            assert result == datetime(2025, 1, 1, 12, 0, 0)
-        except ImportError:
-            pytest.skip("pandas not available")
-
-    def test_pandas_nat_returns_none(self):
-        """pandas.NaT should return None."""
-        try:
-            import pandas as pd
-            result = _to_python_scalar(pd.NaT)
-            assert result is None
-        except ImportError:
-            pytest.skip("pandas not available")
-
-    def test_numpy_datetime64_converted(self):
-        """numpy.datetime64 should be converted to datetime.datetime."""
-        try:
-            import numpy as np
-            dt64 = np.datetime64("2025-01-01T12:00:00")
-            result = _to_python_scalar(dt64)
-            assert isinstance(result, datetime)
-            assert result == datetime(2025, 1, 1, 12, 0, 0)
-        except ImportError:
-            pytest.skip("numpy not available")
-
-    def test_numpy_nat_returns_none(self):
-        """numpy.datetime64('NaT') should return None."""
-        try:
-            import numpy as np
-            nat = np.datetime64("NaT")
-            result = _to_python_scalar(nat)
-            assert result is None
-        except ImportError:
-            pytest.skip("numpy not available")
-
-    def test_numpy_int_converted(self):
-        """numpy integer should be converted to Python int."""
-        try:
-            import numpy as np
-            nint = np.int64(42)
-            result = _to_python_scalar(nint)
-            assert isinstance(result, int)
-            assert result == 42
-        except ImportError:
-            pytest.skip("numpy not available")
-
-    def test_numpy_float_converted(self):
-        """numpy float should be converted to Python float."""
-        try:
-            import numpy as np
-            nfloat = np.float64(3.14)
-            result = _to_python_scalar(nfloat)
-            assert isinstance(result, float)
-            assert result == 3.14
-        except ImportError:
-            pytest.skip("numpy not available")
-
-    def test_numpy_bool_converted(self):
-        """numpy bool should be converted to Python bool."""
-        try:
-            import numpy as np
-            nbool = np.bool_(True)
-            result = _to_python_scalar(nbool)
-            assert isinstance(result, bool)
-            assert result is True
-        except ImportError:
-            pytest.skip("numpy not available")
 
 
 if __name__ == "__main__":

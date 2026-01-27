@@ -7,6 +7,7 @@ setup(
     py_modules=[
         "nemweb_datasource",
         "nemweb_datasource_arrow",
+        "nemweb_datasource_stream",
         "nemweb_utils",
         "nemweb_ingest",
         "nemweb_sink",

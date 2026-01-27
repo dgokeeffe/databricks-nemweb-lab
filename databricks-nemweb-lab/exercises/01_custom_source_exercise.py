@@ -35,7 +35,7 @@
 from pyspark.sql.datasource import DataSource, DataSourceReader
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType
 
-from databricks.sdk.runtime import spark, display
+from databricks.sdk.runtime import spark, display, dbutils
 
 # The simplest possible data source - generates synthetic data
 class HelloWorldDataSource(DataSource):
@@ -234,7 +234,13 @@ check_schema()
 import sys
 import os
 
-from nemweb_utils import fetch_nemweb_current, parse_nemweb_csv
+# Add src to path for imports (required for Databricks workspace)
+notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
+repo_root = str(os.path.dirname(os.path.dirname(notebook_path)))
+sys.path.insert(0, f"/Workspace{repo_root}/src")
+
+from nemweb_utils import fetch_nemweb_current, parse_nemweb_csv, get_version
+print(f"nemweb_utils version: {get_version()}")
 
 # Quick test - these helpers handle HTTP fetching and CSV parsing
 # This fetches REAL data from AEMO NEMWEB CURRENT folder (last ~7 days)

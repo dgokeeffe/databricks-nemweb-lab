@@ -19,7 +19,7 @@
   "libraries": [
     {
       "notebook": {
-        "path": "/Workspace/Users/${user}/databricks-nemweb-lab/notebooks/02_lakeflow_pipeline"
+        "path": "/Workspace/Users/${user}/databricks-nemweb-lab/exercises/02_lakeflow_pipeline"
       }
     }
   ],
