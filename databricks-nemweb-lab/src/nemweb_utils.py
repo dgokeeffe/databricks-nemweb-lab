@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Version for debugging - increment when making changes
-__version__ = "2.10.4"
+__version__ = "2.10.5"
 
 # Debug file path - check this in DBFS after errors
 DEBUG_LOG_PATH = "/tmp/nemweb_debug.log"
@@ -565,6 +565,8 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
         row_num += 1
         try:
             values = []
+            skip_row = False
+            
             for name in field_names:
                 raw_value = row.get(name)
 
@@ -575,7 +577,21 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
                     converted = _convert_value(raw_value, field_types[name])
                     # Coerce to pure Python type (handles pandas/numpy edge cases)
                     coerced = _to_python_scalar(converted, field_types[name])
+                    
+                    # CRITICAL: Validate timestamp types - Spark requires datetime.datetime or None
+                    from pyspark.sql.types import TimestampType
+                    if isinstance(field_types[name], TimestampType):
+                        if coerced is not None and not isinstance(coerced, datetime):
+                            # Skip this row if timestamp is invalid (especially for required fields like SETTLEMENTDATE)
+                            _debug_log(f"Row {row_num}: Invalid timestamp for {name}: {type(coerced).__name__} = {coerced}")
+                            skip_row = True
+                            break
+                    
                     values.append(coerced)
+            
+            # Skip rows with invalid timestamps
+            if skip_row:
+                continue
 
             result = tuple(values)
 
@@ -590,7 +606,6 @@ def parse_nemweb_csv(data: list[dict], schema: "StructType") -> Iterator[Tuple]:
             continue
 
     _debug_log(f"=== parse_nemweb_csv complete: {row_num} rows ===")
-
 
 
 def _to_python_scalar(v: any, spark_type: any = None) -> any:
@@ -636,11 +651,23 @@ def _to_python_scalar(v: any, spark_type: any = None) -> any:
     try:
         import numpy as np
         if isinstance(v, (np.datetime64,)):
-            import pandas as pd
-            ts = pd.to_datetime(v, utc=False)
-            if pd.isna(ts):
+            # Explicitly check for NaT first
+            if np.isnat(v):
                 return None
-            return ts.to_pydatetime()
+            # Convert via pandas for reliable handling
+            try:
+                import pandas as pd
+                ts = pd.to_datetime(v, utc=False)
+                if pd.isna(ts):
+                    return None
+                return ts.to_pydatetime()
+            except Exception:
+                # Fallback: convert to string and parse
+                try:
+                    ts_str = np.datetime_as_string(v, unit='us', timezone='naive')
+                    return datetime.fromisoformat(ts_str.replace('Z', ''))
+                except Exception:
+                    return None
     except (ImportError, AttributeError):
         pass
 
@@ -653,6 +680,11 @@ def _to_python_scalar(v: any, spark_type: any = None) -> any:
             return int(v)
         if isinstance(v, np.bool_):
             return bool(v)
+        # Handle generic numpy integer/floating (broader check)
+        if isinstance(v, np.integer):
+            return int(v)
+        if isinstance(v, np.floating):
+            return float(v)
     except (ImportError, AttributeError):
         pass
 
@@ -673,18 +705,31 @@ def _to_python_scalar(v: any, spark_type: any = None) -> any:
         except (AttributeError, TypeError):
             pass
 
-    # String handling - ensure pure str
-    if isinstance(v, str):
-        return v
-
-    # For TimestampType columns, try parsing as timestamp string
+    # CRITICAL: Check TimestampType BEFORE general string handling
+    # This ensures timestamp strings are parsed, not returned as strings
     if spark_type:
         from pyspark.sql.types import TimestampType
         if isinstance(spark_type, TimestampType):
+            # If we already have a datetime, return it
+            if isinstance(v, datetime):
+                return v
+            # If None, return None
+            if v is None:
+                return None
+            # If string, try to parse it
             if isinstance(v, str):
                 parsed = _parse_timestamp_value(v)
                 if parsed is not None:
                     return parsed
+                # If parsing failed, return None (Spark can handle None but not invalid types)
+                return None
+            # For any other type with TimestampType, return None to avoid assertion errors
+            # Spark requires datetime.datetime or None, nothing else
+            return None
+
+    # String handling - ensure pure str (only for non-timestamp types)
+    if isinstance(v, str):
+        return v
 
     # Default: return as-is (assume already Python-native)
     return v
@@ -716,7 +761,17 @@ def _convert_value(value, spark_type):
         # Parse to datetime.datetime (tz-naive) for Spark compatibility
         parsed_ts = _parse_timestamp_value(str_value)
         # Coerce to ensure pure Python datetime
-        return _to_python_scalar(parsed_ts, spark_type)
+        result = _to_python_scalar(parsed_ts, spark_type)
+        # CRITICAL: Ensure result is either None or datetime.datetime
+        # Spark's timestamp converter requires datetime.datetime objects
+        if result is not None and not isinstance(result, datetime):
+            # If somehow we got a non-datetime value, try parsing again as fallback
+            if isinstance(result, str):
+                result = _parse_timestamp_value(result)
+            else:
+                # Last resort: return None to skip this row
+                return None
+        return result
 
     elif isinstance(spark_type, StringType):
         # For string columns, normalize timestamp format if present
@@ -750,11 +805,14 @@ def _parse_timestamp_value(ts_str: str) -> datetime:
 
     Returns None only if parsing completely fails.
     Spark requires datetime.datetime objects for TimestampType columns.
+    
+    Handles both slash and dash formats, and strips quotes/whitespace.
     """
     if not ts_str:
         return None
 
-    ts_str = ts_str.strip()
+    # Strip whitespace and quotes (csv.reader should handle quotes, but be defensive)
+    ts_str = str(ts_str).strip().strip('"').strip("'").strip()
     if not ts_str:
         return None
 
