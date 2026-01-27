@@ -313,8 +313,9 @@ def fetch_nemweb_current(
         raise
 
     # Parse HTML for ZIP files matching our prefix
-    # Pattern: PUBLIC_DISPATCHIS_202501270005.zip
-    pattern = rf'href="(PUBLIC_{file_prefix}_\d{{12}}\.zip)"'
+    # Pattern: PUBLIC_DISPATCHIS_202501270005_0000000500374526.zip
+    # Format: PREFIX_YYYYMMDDHHMM_SEQUENCEID.zip
+    pattern = rf'(PUBLIC_{file_prefix}_\d{{12}}_\d+\.zip)'
     matches = re.findall(pattern, html, re.IGNORECASE)
 
     if not matches:
