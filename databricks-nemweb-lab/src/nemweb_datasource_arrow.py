@@ -186,7 +186,10 @@ class NemwebArrowReader(DataSourceReader):
         """Create one partition per ZIP file in volume."""
         import os
 
-        table_path = os.path.join(self.volume_path, self.table.lower())
+        # Use file prefix (dispatchis, tradingis) as folder name, not table name
+        # This allows DISPATCHREGIONSUM and DISPATCHPRICE to share the same files
+        _, file_prefix = TABLE_TO_FOLDER.get(self.table, ("DispatchIS_Reports", "DISPATCHIS"))
+        table_path = os.path.join(self.volume_path, file_prefix.lower())
 
         if not os.path.exists(table_path):
             logger.warning(f"Volume path does not exist: {table_path}")
@@ -240,8 +243,9 @@ class NemwebArrowReader(DataSourceReader):
             self.table, ("DispatchIS_Reports", "DISPATCHIS")
         )
 
-        # Create volume subdirectory for this table
-        table_path = os.path.join(self.volume_path, self.table.lower())
+        # Use file prefix (dispatchis, tradingis) as folder name, not table name
+        # This allows DISPATCHREGIONSUM and DISPATCHPRICE to share the same downloaded files
+        table_path = os.path.join(self.volume_path, file_prefix.lower())
         os.makedirs(table_path, exist_ok=True)
 
         # Generate download tasks for date range
