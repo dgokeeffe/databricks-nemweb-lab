@@ -6,8 +6,8 @@ import sys
 import os
 
 # --- Parameters ---
-dbutils.widgets.text("catalog", "workspace", "Catalog")
-dbutils.widgets.text("schema", "nemweb_live", "Schema")
+dbutils.widgets.text("catalog", "agl", "Catalog")
+dbutils.widgets.text("schema", "nemweb", "Schema")
 dbutils.widgets.text("duration_minutes", "60", "Duration (minutes)")
 dbutils.widgets.text("poll_interval", "30", "Poll interval (seconds)")
 dbutils.widgets.dropdown("include_interconnectors", "true", ["true", "false"], "Include interconnectors")

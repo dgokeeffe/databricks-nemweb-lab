@@ -374,7 +374,7 @@ class DispatchPoller:
         def on_new_data(data, interval_time):
             # data is list of dicts with regional dispatch info
             df = spark.createDataFrame(data)
-            df.write.mode("append").saveAsTable("nemweb_live.dispatch_region")
+            df.write.mode("append").saveAsTable("agl.nemweb.dispatch_region")
             print(f"Saved {len(data)} rows for interval {interval_time}")
 
         poller = DispatchPoller(
@@ -553,8 +553,8 @@ class DispatchPoller:
 
 def poll_to_delta(
     table_name: str,
-    catalog: str = "workspace",
-    schema: str = "nemweb_live",
+    catalog: str = "agl",
+    schema: str = "nemweb",
     duration_minutes: Optional[int] = None,
     poll_interval: int = 30,
     include_interconnectors: bool = True,
@@ -572,8 +572,8 @@ def poll_to_delta(
         # Run for 1 hour, writing to Delta
         poll_to_delta(
             table_name="dispatch_region",
-            catalog="workspace",
-            schema="nemweb_live",
+            catalog="agl",
+            schema="nemweb",
             duration_minutes=60,
         )
 

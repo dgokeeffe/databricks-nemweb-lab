@@ -28,7 +28,7 @@ Usage:
              .format("delta")
              .outputMode("append")
              .option("checkpointLocation", "/tmp/nemweb_checkpoint")
-             .table("nemweb_live"))
+             .table("agl.nemweb.dispatch_live"))
 
 Requirements:
     - PySpark 4.0+ / DBR 15.4+
@@ -429,7 +429,7 @@ class NemwebStreamDataSource(DataSource):
                  .format("delta")
                  .outputMode("append")
                  .option("checkpointLocation", "/tmp/nemweb_checkpoint")
-                 .table("nemweb_live"))
+                 .table("agl.nemweb.dispatch_live"))
 
     Options:
         table: MMS table name (DISPATCHREGIONSUM, DISPATCHPRICE, TRADINGPRICE)
