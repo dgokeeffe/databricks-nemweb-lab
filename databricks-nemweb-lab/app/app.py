@@ -10,8 +10,9 @@ Deploy to Databricks:
 """
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import dash
@@ -53,22 +54,43 @@ DELTA_TABLE = os.environ.get("NEMWEB_DELTA_TABLE", "agl.nemweb.dispatch_region")
 # Number of 5-minute intervals to fetch for live mode (12 = 1 hour)
 LIVE_INTERVALS = int(os.environ.get("NEMWEB_LIVE_INTERVALS", "12"))
 
+# Timezone for display (NEM operates on Australian Eastern Time)
+DISPLAY_TZ = ZoneInfo("Australia/Sydney")
+
 # NEM Regions
 NEM_REGIONS = ["NSW1", "VIC1", "QLD1", "SA1", "TAS1"]
 
-# Region display names and colors
+# AGL Brand Colors
+AGL_ORANGE = "#FF6900"
+AGL_DARK = "#1A1A1A"
+AGL_GREY = "#4A4A4A"
+AGL_LIGHT_GREY = "#F5F5F5"
+
+# Region display names and colors (AGL-themed palette)
 REGION_CONFIG = {
-    "NSW1": {"name": "New South Wales", "color": "#1f77b4"},
-    "VIC1": {"name": "Victoria", "color": "#ff7f0e"},
-    "QLD1": {"name": "Queensland", "color": "#2ca02c"},
-    "SA1": {"name": "South Australia", "color": "#d62728"},
-    "TAS1": {"name": "Tasmania", "color": "#9467bd"},
+    "NSW1": {"name": "New South Wales", "color": "#FF6900"},  # AGL Orange
+    "VIC1": {"name": "Victoria", "color": "#00A9E0"},  # Blue
+    "QLD1": {"name": "Queensland", "color": "#7AB800"},  # Green
+    "SA1": {"name": "South Australia", "color": "#E4002B"},  # Red
+    "TAS1": {"name": "Tasmania", "color": "#6D2077"},  # Purple
 }
 
 # Price thresholds for alerts ($/MWh)
 PRICE_WARNING = 100
 PRICE_ALERT = 300
 PRICE_CRITICAL = 1000
+
+
+def to_aedt(dt) -> datetime:
+    """Convert datetime to Australian Eastern Time for display."""
+    if dt is None or pd.isna(dt):
+        return None
+    if isinstance(dt, str):
+        dt = pd.to_datetime(dt)
+    if dt.tzinfo is None:
+        # Assume UTC if no timezone
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(DISPLAY_TZ)
 
 
 def generate_sample_data() -> pd.DataFrame:
@@ -215,31 +237,105 @@ def get_price_status(price: float) -> tuple[str, str]:
         return "NORMAL", "#28a745"
 
 
-# Initialize Dash app
+# AGL Logo URL (from their website)
+AGL_LOGO_URL = "https://www.agl.com.au/-/media/aglmedia/images/logos/agl-logo.png"
+
+# Initialize Dash app with AGL styling
 app = dash.Dash(
     __name__,
-    title="NEMWEB Price Dashboard",
+    title="AGL NEM Price Monitor",
     update_title="Updating...",
     suppress_callback_exceptions=True,
+    external_stylesheets=[
+        # Google Fonts - Montserrat (similar to AGL's brand font)
+        "https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700&display=swap"
+    ],
 )
+
+# Apply global font styling
+app.index_string = '''
+<!DOCTYPE html>
+<html>
+    <head>
+        {%metas%}
+        <title>{%title%}</title>
+        {%favicon%}
+        {%css%}
+        <style>
+            * {
+                font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, sans-serif;
+            }
+            body {
+                margin: 0;
+                background-color: #FAFAFA;
+            }
+            @keyframes pulse {
+                0%, 100% { opacity: 1; }
+                50% { opacity: 0.7; }
+            }
+        </style>
+    </head>
+    <body>
+        {%app_entry%}
+        <footer>
+            {%config%}
+            {%scripts%}
+            {%renderer%}
+        </footer>
+    </body>
+</html>
+'''
 
 # For Databricks Apps deployment
 server = app.server
 
+# Data source display name
+DATA_SOURCE_LABELS = {
+    "live": ("LIVE", "Direct from NEMWEB API", AGL_ORANGE),
+    "delta": ("LIVE", f"Streaming from Delta Lake", AGL_ORANGE),
+    "sample": ("DEMO", "Sample data", AGL_GREY),
+}
+_source_label, _source_desc, _source_color = DATA_SOURCE_LABELS.get(DATA_SOURCE, ("", "", AGL_GREY))
+
 # App layout
 app.layout = html.Div([
-    # Header
+    # Header with AGL branding
     html.Div([
-        html.H1("NEM Electricity Prices", style={"margin": 0}),
+        html.Div([
+            html.Img(
+                src=AGL_LOGO_URL,
+                style={"height": "40px", "marginRight": "20px", "verticalAlign": "middle"}
+            ),
+            html.Span("NEM Price Monitor", style={
+                "fontSize": "24px",
+                "fontWeight": "500",
+                "verticalAlign": "middle",
+            }),
+            html.Span(
+                _source_label,
+                style={
+                    "backgroundColor": _source_color,
+                    "color": "white",
+                    "padding": "4px 12px",
+                    "borderRadius": "4px",
+                    "fontSize": "12px",
+                    "fontWeight": "600",
+                    "marginLeft": "15px",
+                    "verticalAlign": "middle",
+                    "animation": "pulse 2s infinite" if _source_label == "LIVE" else "none",
+                }
+            ) if _source_label else None,
+        ], style={"display": "flex", "alignItems": "center"}),
         html.P(
-            "Real-time spot prices across the Australian National Electricity Market",
-            style={"margin": "5px 0 0 0", "opacity": 0.8}
+            f"Real-time spot prices across the Australian National Electricity Market • {_source_desc}",
+            style={"margin": "10px 0 0 0", "opacity": 0.7, "fontSize": "13px"}
         ),
     ], style={
-        "backgroundColor": "#1a1a2e",
+        "backgroundColor": AGL_DARK,
         "color": "white",
-        "padding": "20px",
-        "marginBottom": "20px",
+        "padding": "20px 30px",
+        "marginBottom": "0",
+        "borderBottom": f"4px solid {AGL_ORANGE}",
     }),
 
     # Current prices cards
@@ -442,7 +538,14 @@ def update_price_cards(data):
     if pd.isna(last_time):
         return cards, "Last updated: Unknown"
 
-    return cards, f"Last updated: {last_time.strftime('%Y-%m-%d %H:%M:%S')}"
+    # Convert to AEDT for display
+    last_time_aedt = to_aedt(last_time)
+    if last_time_aedt:
+        time_str = last_time_aedt.strftime('%d %b %Y %H:%M:%S AEDT')
+    else:
+        time_str = last_time.strftime('%Y-%m-%d %H:%M:%S')
+
+    return cards, f"Last updated: {time_str}"
 
 
 @callback(
@@ -472,20 +575,44 @@ def update_price_chart(data, hours, regions):
         y="rrp",
         color="region",
         color_discrete_map={r: REGION_CONFIG[r]["color"] for r in NEM_REGIONS},
-        labels={"rrp": "Price ($/MWh)", "timestamp": "Time", "region": "Region"},
+        labels={"rrp": "Price ($/MWh)", "timestamp": "Time (AEDT)", "region": "Region"},
     )
 
     # Add threshold lines
-    fig.add_hline(y=PRICE_WARNING, line_dash="dash", line_color="orange", opacity=0.5,
-                  annotation_text="Warning")
-    fig.add_hline(y=PRICE_ALERT, line_dash="dash", line_color="red", opacity=0.5,
-                  annotation_text="Alert")
+    fig.add_hline(y=PRICE_WARNING, line_dash="dash", line_color=AGL_ORANGE, opacity=0.5,
+                  annotation_text="Warning ($100)")
+    fig.add_hline(y=PRICE_ALERT, line_dash="dash", line_color="#E4002B", opacity=0.5,
+                  annotation_text="Alert ($300)")
 
+    # AGL-themed layout
     fig.update_layout(
-        margin=dict(l=50, r=20, t=20, b=50),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=50, r=20, t=30, b=50),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            font=dict(size=11),
+        ),
         hovermode="x unified",
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        font=dict(family="Montserrat, sans-serif", color=AGL_DARK),
+        xaxis=dict(
+            showgrid=True,
+            gridcolor="#E0E0E0",
+            linecolor="#E0E0E0",
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor="#E0E0E0",
+            linecolor="#E0E0E0",
+        ),
     )
+
+    # Thicker lines for better visibility
+    fig.update_traces(line=dict(width=2.5))
 
     return fig
 
@@ -518,6 +645,11 @@ def update_demand_chart(data, regions):
     fig.update_layout(
         margin=dict(l=50, r=20, t=20, b=50),
         showlegend=False,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        font=dict(family="Montserrat, sans-serif", color=AGL_DARK),
+        xaxis=dict(showgrid=False, linecolor="#E0E0E0"),
+        yaxis=dict(showgrid=True, gridcolor="#E0E0E0", linecolor="#E0E0E0"),
     )
 
     return fig
@@ -556,6 +688,11 @@ def update_price_distribution(data, hours, regions):
     fig.update_layout(
         margin=dict(l=50, r=20, t=20, b=50),
         showlegend=False,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        font=dict(family="Montserrat, sans-serif", color=AGL_DARK),
+        xaxis=dict(showgrid=False, linecolor="#E0E0E0"),
+        yaxis=dict(showgrid=True, gridcolor="#E0E0E0", linecolor="#E0E0E0"),
     )
 
     return fig
