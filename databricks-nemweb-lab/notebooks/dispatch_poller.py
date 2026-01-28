@@ -4,6 +4,7 @@
 
 import sys
 import os
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType, TimestampType
 
 # --- Parameters ---
 dbutils.widgets.text("catalog", "agl", "Catalog")
@@ -25,6 +26,50 @@ sys.path.insert(0, f"/Workspace{repo_root}/src")
 
 from nemweb_dispatch import DispatchPoller
 
+# --- Schemas for explicit typing (avoids CANNOT_DETERMINE_TYPE errors) ---
+region_schema = StructType([
+    StructField("SETTLEMENTDATE", TimestampType(), True),
+    StructField("RUNNO", StringType(), True),
+    StructField("REGIONID", StringType(), True),
+    StructField("INTERVENTION", StringType(), True),
+    StructField("RRP", DoubleType(), True),
+    StructField("EEP", DoubleType(), True),
+    StructField("ROP", DoubleType(), True),
+    StructField("APCFLAG", StringType(), True),
+    StructField("MARKETSUSPENDEDFLAG", StringType(), True),
+    StructField("TOTALDEMAND", DoubleType(), True),
+    StructField("DEMANDFORECAST", DoubleType(), True),
+    StructField("DISPATCHABLEGENERATION", DoubleType(), True),
+    StructField("DISPATCHABLELOAD", DoubleType(), True),
+    StructField("NETINTERCHANGE", DoubleType(), True),
+    StructField("AVAILABLEGENERATION", DoubleType(), True),
+    StructField("AVAILABLELOAD", DoubleType(), True),
+    StructField("CLEAREDSUPPLY", DoubleType(), True),
+    StructField("RAISE6SECRRP", DoubleType(), True),
+    StructField("RAISE60SECRRP", DoubleType(), True),
+    StructField("RAISE5MINRRP", DoubleType(), True),
+    StructField("LOWER6SECRRP", DoubleType(), True),
+    StructField("LOWER60SECRRP", DoubleType(), True),
+    StructField("LOWER5MINRRP", DoubleType(), True),
+])
+
+interconnector_schema = StructType([
+    StructField("SETTLEMENTDATE", TimestampType(), True),
+    StructField("RUNNO", StringType(), True),
+    StructField("INTERCONNECTORID", StringType(), True),
+    StructField("INTERVENTION", StringType(), True),
+    StructField("METEREDMWFLOW", DoubleType(), True),
+    StructField("MWFLOW", DoubleType(), True),
+    StructField("MWLOSSES", DoubleType(), True),
+    StructField("MARGINALVALUE", DoubleType(), True),
+    StructField("VIOLATIONDEGREE", DoubleType(), True),
+    StructField("IMPORTLIMIT", DoubleType(), True),
+    StructField("EXPORTLIMIT", DoubleType(), True),
+    StructField("MARGINALLOSS", DoubleType(), True),
+    StructField("EXPORTGENCONID", StringType(), True),
+    StructField("IMPORTGENCONID", StringType(), True),
+])
+
 # --- Create schema and tables ---
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}")
 region_table = f"{catalog}.{schema}.dispatch_region"
@@ -36,14 +81,14 @@ print("=" * 70)
 
 # --- Callbacks ---
 def save_region_data(data, interval_time):
-    df = spark.createDataFrame(data)
+    df = spark.createDataFrame(data, schema=region_schema)
     df.write.mode("append").saveAsTable(region_table)
     prices = {r["REGIONID"]: r["RRP"] for r in data}
     price_str = " | ".join(f"{k}: ${v:.2f}" for k, v in sorted(prices.items()))
     print(f"✓ {interval_time.strftime('%H:%M')} | {price_str}")
 
 def save_interconnector_data(data, interval_time):
-    df = spark.createDataFrame(data)
+    df = spark.createDataFrame(data, schema=interconnector_schema)
     df.write.mode("append").saveAsTable(interconnector_table)
 
 # --- Run poller ---
