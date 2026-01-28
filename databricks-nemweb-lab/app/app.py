@@ -28,14 +28,30 @@ try:
 except ImportError:
     DATABRICKS_AVAILABLE = False
 
+# Try to import nemweb_dispatch for live data fetching
+try:
+    import sys
+    import os as _os
+    # Add src to path for local imports
+    _src_path = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "src")
+    if _src_path not in sys.path:
+        sys.path.insert(0, _src_path)
+    from nemweb_dispatch import fetch_dispatch_region, fetch_dispatch_interconnector
+    NEMWEB_LIVE_AVAILABLE = True
+except ImportError:
+    NEMWEB_LIVE_AVAILABLE = False
+
 # Configuration from environment variables
 WAREHOUSE_ID = os.environ.get("DATABRICKS_WAREHOUSE_ID", "")
 _host = os.environ.get("DATABRICKS_HOST", "")
 # Strip protocol prefix if present (connector expects hostname only)
 DATABRICKS_HOST = _host.replace("https://", "").replace("http://", "").rstrip("/")
 DATABRICKS_TOKEN = os.environ.get("DATABRICKS_TOKEN", "")
-DATA_SOURCE = os.environ.get("NEMWEB_DATA_SOURCE", "sample")  # "sample" or "delta"
+# Data source: "sample" (fake), "delta" (from table), or "live" (direct from NEMWEB API)
+DATA_SOURCE = os.environ.get("NEMWEB_DATA_SOURCE", "live" if NEMWEB_LIVE_AVAILABLE else "sample")
 DELTA_TABLE = os.environ.get("NEMWEB_DELTA_TABLE", "nemweb_prices")
+# Number of 5-minute intervals to fetch for live mode (12 = 1 hour)
+LIVE_INTERVALS = int(os.environ.get("NEMWEB_LIVE_INTERVALS", "12"))
 
 # NEM Regions
 NEM_REGIONS = ["NSW1", "VIC1", "QLD1", "SA1", "TAS1"]
@@ -105,6 +121,36 @@ def generate_sample_data() -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
+def fetch_live_data() -> Optional[pd.DataFrame]:
+    """Fetch live price data directly from NEMWEB API."""
+    if not NEMWEB_LIVE_AVAILABLE:
+        return None
+
+    try:
+        # Fetch recent dispatch data (each file = 5 minutes)
+        data = fetch_dispatch_region(max_files=LIVE_INTERVALS, debug=False)
+
+        if not data:
+            return None
+
+        # Convert to DataFrame with expected column names
+        rows = []
+        for row in data:
+            rows.append({
+                "timestamp": row.get("SETTLEMENTDATE"),
+                "region": row.get("REGIONID"),
+                "rrp": row.get("RRP"),
+                "demand_mw": row.get("TOTALDEMAND"),
+            })
+
+        df = pd.DataFrame(rows)
+        return df
+
+    except Exception as e:
+        print(f"Error fetching live NEMWEB data: {e}")
+        return None
+
+
 def fetch_delta_data() -> Optional[pd.DataFrame]:
     """Fetch price data from Delta table via Databricks SQL."""
     if not DATABRICKS_AVAILABLE or not all([WAREHOUSE_ID, DATABRICKS_HOST, DATABRICKS_TOKEN]):
@@ -141,6 +187,13 @@ def fetch_delta_data() -> Optional[pd.DataFrame]:
 
 def get_price_data() -> pd.DataFrame:
     """Get price data from configured source."""
+    if DATA_SOURCE == "live":
+        df = fetch_live_data()
+        if df is not None:
+            print(f"[LIVE] Fetched {len(df)} rows from NEMWEB")
+            return df
+        print("[LIVE] Failed to fetch, falling back to sample")
+
     if DATA_SOURCE == "delta":
         df = fetch_delta_data()
         if df is not None:
