@@ -30,7 +30,7 @@ from pyspark.sql.types import DoubleType, TimestampType
 logger = logging.getLogger(__name__)
 
 # Version for debugging - increment when making changes
-__version__ = "2.10.21"
+__version__ = "2.11.0"
 
 
 def get_version() -> str:
@@ -102,6 +102,26 @@ TABLE_CONFIG = {
         "folder": "ROOFTOP_PV/ACTUAL",
         "file_prefix": "ROOFTOP_PV_ACTUAL",
         "record_type": None  # Uses standard CSV format
+    },
+    # Dispatch_Reports - comprehensive dispatch data with prices, FCAS, interconnectors
+    # File naming: PUBLIC_DISPATCH_YYYYMMDDHHMM_YYYYMMDDHHmmss_LEGACY.zip
+    "DISPATCH_REGION": {
+        "folder": "Dispatch_Reports",
+        "file_prefix": "DISPATCH",
+        "file_suffix": "_LEGACY",  # Distinct naming pattern
+        "record_type": "DREGION,"  # Note: DREGION has empty field after comma
+    },
+    "DISPATCH_INTERCONNECTOR": {
+        "folder": "Dispatch_Reports",
+        "file_prefix": "DISPATCH",
+        "file_suffix": "_LEGACY",
+        "record_type": "DINT,"  # Interconnector dispatch details
+    },
+    "DISPATCH_INTERCONNECTOR_TRADING": {
+        "folder": "Dispatch_Reports",
+        "file_prefix": "DISPATCH",
+        "file_suffix": "_LEGACY",
+        "record_type": "TINT,"  # Metered interconnector flows
     },
 }
 
@@ -310,6 +330,7 @@ def fetch_nemweb_current(
     config = TABLE_CONFIG[table]
     folder = config["folder"]
     file_prefix = config["file_prefix"]
+    file_suffix = config.get("file_suffix", "")  # e.g., "_LEGACY" for Dispatch_Reports
     record_type = config.get("record_type")
 
     # Fetch directory listing from CURRENT
@@ -326,9 +347,14 @@ def fetch_nemweb_current(
         raise
 
     # Parse HTML for ZIP files matching our prefix
-    # Pattern: PUBLIC_DISPATCHIS_202501270005_0000000500374526.zip
-    # Format: PREFIX_YYYYMMDDHHMM_SEQUENCEID.zip
-    pattern = rf'(PUBLIC_{file_prefix}_\d{{12}}_\d+\.zip)'
+    # Standard pattern: PUBLIC_DISPATCHIS_202501270005_0000000500374526.zip
+    # Legacy pattern:   PUBLIC_DISPATCH_202501270005_20250127000515_LEGACY.zip
+    if file_suffix:
+        # Legacy format: PREFIX_YYYYMMDDHHMM_YYYYMMDDHHmmss_SUFFIX.zip
+        pattern = rf'(PUBLIC_{file_prefix}_\d{{12}}_\d{{14}}{file_suffix}\.zip)'
+    else:
+        # Standard format: PREFIX_YYYYMMDDHHMM_SEQUENCEID.zip
+        pattern = rf'(PUBLIC_{file_prefix}_\d{{12}}_\d+\.zip)'
     all_matches = re.findall(pattern, html, re.IGNORECASE)
     
     if not all_matches:
@@ -343,13 +369,15 @@ def fetch_nemweb_current(
         from datetime import datetime as dt
         target_date_obj = dt.strptime(target_date, "%Y-%m-%d")
         target_date_str = target_date_obj.strftime("%Y%m%d")
-        
+
         # Find files matching the target date
-        # Filename format: PUBLIC_{file_prefix}_YYYYMMDDHHMM_SEQUENCE.zip
-        # Extract timestamp (12 digits) and take first 8 chars for date
+        # Standard: PUBLIC_{file_prefix}_YYYYMMDDHHMM_SEQUENCE.zip
+        # Legacy:   PUBLIC_{file_prefix}_YYYYMMDDHHMM_YYYYMMDDHHmmss_SUFFIX.zip
+        # Extract timestamp (12 digits after prefix) and take first 8 chars for date
         matching_files = []
-        timestamp_pattern = rf'PUBLIC_{file_prefix}_(\d{{12}})_\d+\.zip'
-        
+        # Pattern captures the dispatch interval timestamp (first 12-digit group)
+        timestamp_pattern = rf'PUBLIC_{file_prefix}_(\d{{12}})_'
+
         for filename in all_matches:
             match = re.search(timestamp_pattern, filename, re.IGNORECASE)
             if match:
@@ -890,6 +918,60 @@ def get_nemweb_schema(table: str) -> "StructType":
             StructField("RRP", DoubleType(), True),
             StructField("EEP", DoubleType(), True),
             StructField("INVALIDFLAG", StringType(), True),
+        ]),
+
+        # Dispatch_Reports schemas - comprehensive dispatch data
+        "DISPATCH_REGION": StructType([
+            StructField("SETTLEMENTDATE", StringType(), True),
+            StructField("RUNNO", StringType(), True),
+            StructField("REGIONID", StringType(), True),
+            StructField("INTERVENTION", StringType(), True),
+            StructField("RRP", DoubleType(), True),  # Regional Reference Price ($/MWh)
+            StructField("EEP", DoubleType(), True),  # Excess Energy Price
+            StructField("ROP", DoubleType(), True),  # Regional Override Price
+            StructField("APCFLAG", StringType(), True),
+            StructField("MARKETSUSPENDEDFLAG", StringType(), True),
+            StructField("TOTALDEMAND", DoubleType(), True),
+            StructField("DEMANDFORECAST", DoubleType(), True),
+            StructField("DISPATCHABLEGENERATION", DoubleType(), True),
+            StructField("DISPATCHABLELOAD", DoubleType(), True),
+            StructField("NETINTERCHANGE", DoubleType(), True),
+            StructField("AVAILABLEGENERATION", DoubleType(), True),
+            StructField("AVAILABLELOAD", DoubleType(), True),
+            StructField("CLEAREDSUPPLY", DoubleType(), True),
+            # FCAS prices (Frequency Control Ancillary Services)
+            StructField("RAISE6SECRRP", DoubleType(), True),  # Fast raise price
+            StructField("RAISE60SECRRP", DoubleType(), True),  # Slow raise price
+            StructField("RAISE5MINRRP", DoubleType(), True),  # Delayed raise price
+            StructField("LOWER6SECRRP", DoubleType(), True),  # Fast lower price
+            StructField("LOWER60SECRRP", DoubleType(), True),  # Slow lower price
+            StructField("LOWER5MINRRP", DoubleType(), True),  # Delayed lower price
+        ]),
+
+        "DISPATCH_INTERCONNECTOR": StructType([
+            StructField("SETTLEMENTDATE", StringType(), True),
+            StructField("RUNNO", StringType(), True),
+            StructField("INTERCONNECTORID", StringType(), True),
+            StructField("INTERVENTION", StringType(), True),
+            StructField("METEREDMWFLOW", DoubleType(), True),  # Actual metered flow
+            StructField("MWFLOW", DoubleType(), True),  # Dispatch target flow
+            StructField("MWLOSSES", DoubleType(), True),  # Losses on interconnector
+            StructField("MARGINALVALUE", DoubleType(), True),  # Value of extra capacity
+            StructField("VIOLATIONDEGREE", DoubleType(), True),
+            StructField("IMPORTLIMIT", DoubleType(), True),  # Max import to first region
+            StructField("EXPORTLIMIT", DoubleType(), True),  # Max export from first region
+            StructField("MARGINALLOSS", DoubleType(), True),
+            StructField("EXPORTGENCONID", StringType(), True),  # Binding constraint (export)
+            StructField("IMPORTGENCONID", StringType(), True),  # Binding constraint (import)
+        ]),
+
+        "DISPATCH_INTERCONNECTOR_TRADING": StructType([
+            StructField("SETTLEMENTDATE", StringType(), True),
+            StructField("RUNNO", StringType(), True),
+            StructField("INTERCONNECTORID", StringType(), True),
+            StructField("METEREDMWFLOW", DoubleType(), True),  # Actual metered flow
+            StructField("MWFLOW", DoubleType(), True),  # Target flow
+            StructField("MWLOSSES", DoubleType(), True),  # Losses
         ]),
     }
 
