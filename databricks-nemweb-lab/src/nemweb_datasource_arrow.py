@@ -183,6 +183,34 @@ class NemwebArrowReader(DataSourceReader):
         # Include recent data from CURRENT (5-minute interval files)
         self.include_current = options.get("include_current", "false").lower() == "true"
 
+    def _ensure_volume_dir(self, path: str) -> None:
+        """
+        Create directory in UC Volume, handling Serverless limitations.
+
+        On Serverless/Lakeflow pipelines, os.makedirs() doesn't work on /Volumes paths.
+        We use dbutils.fs.mkdirs() which works correctly with the FUSE filesystem.
+        Falls back to os.makedirs() for local development.
+        """
+        import os
+
+        if path.startswith("/Volumes"):
+            try:
+                from pyspark.sql import SparkSession
+                spark = SparkSession.getActiveSession()
+                if spark:
+                    from py4j.protocol import Py4JError
+                    try:
+                        dbutils = spark._jvm.com.databricks.dbutils_v1.DBUtilsHolder.dbutils()
+                        dbutils.fs().mkdirs(path)
+                        return
+                    except (Py4JError, AttributeError):
+                        pass
+            except Exception as e:
+                logger.warning(f"dbutils not available: {e}, trying os.makedirs")
+
+        # Fallback for local development or non-Volume paths
+        os.makedirs(path, exist_ok=True)
+
     def partitions(self) -> list[InputPartition]:
         """Create partitions based on mode (volume, auto-download, or HTTP)."""
         if self.volume_path:
@@ -275,7 +303,6 @@ class NemwebArrowReader(DataSourceReader):
         for files that already exist when skip_existing is True.
         """
         import os
-        import time
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         folder, file_prefix = TABLE_TO_FOLDER.get(
@@ -288,8 +315,10 @@ class NemwebArrowReader(DataSourceReader):
         base_path = os.path.join(self.volume_path, file_prefix.lower())
         archive_path = os.path.join(base_path, "archive")
         current_path = os.path.join(base_path, "current")
-        os.makedirs(archive_path, exist_ok=True)
-        os.makedirs(current_path, exist_ok=True)
+
+        # Create directories using dbutils on Databricks (os.makedirs doesn't work on /Volumes in Serverless)
+        self._ensure_volume_dir(archive_path)
+        self._ensure_volume_dir(current_path)
 
         # Generate download tasks for date range
         start = datetime.strptime(self.start_date, "%Y-%m-%d")
