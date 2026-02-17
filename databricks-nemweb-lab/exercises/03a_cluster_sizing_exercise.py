@@ -88,8 +88,8 @@
 # MAGIC
 # MAGIC | Metric | Value |
 # MAGIC |--------|-------|
-# MAGIC | Data volume | 6 months historical + daily incremental |
-# MAGIC | Historical load | ~50-100 MB (260k rows) |
+# MAGIC | Data volume | 12 months historical + daily incremental |
+# MAGIC | Historical load | ~100-200 MB (~520k rows) |
 # MAGIC | Daily incremental | ~1 MB (1,440 rows per region × 5 regions) |
 # MAGIC | SLA | Process within 15 minutes of data availability |
 # MAGIC | Budget | Minimize total cost while meeting SLA |

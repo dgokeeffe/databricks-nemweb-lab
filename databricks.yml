@@ -90,6 +90,8 @@ resources:
           - ${workspace.file_path}/databricks-nemweb-lab/artifacts/nemweb_datasource-2.10.23-py3-none-any.whl
       configuration:
         bundle.sourcePath: ${workspace.file_path}/databricks-nemweb-lab/pipelines
+        pipeline.catalog: "${var.catalog}"
+        pipeline.schema: "${var.schema}"
 
   jobs:
     nemweb_lab_workflow:

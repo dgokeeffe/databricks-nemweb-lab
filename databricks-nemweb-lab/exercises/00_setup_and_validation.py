@@ -45,7 +45,7 @@ dbutils.widgets.text("volume", "raw_files", "Volume Name")
 
 # COMMAND ----------
 
-dbutils.widgets.text("days_history", "180", "Days of History")
+dbutils.widgets.text("days_history", "360", "Days of History")
 
 # COMMAND ----------
 
