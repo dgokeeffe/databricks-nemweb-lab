@@ -190,6 +190,25 @@ resources:
               - ${workspace.file_path}/artifacts/nemweb_datasource-2.11.0-py3-none-any.whl
               - xgboost
 
+    feature_store_workshop:
+      name: "${var.project_name} - Feature Store Workshop [${var.environment}]"
+      tasks:
+        - task_key: run_workshop
+          environment_key: serverless_fs
+          notebook_task:
+            notebook_path: ./workshops/05_feature_store_workshop.py
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+      environments:
+        - environment_key: serverless_fs
+          spec:
+            environment_version: "4"
+            dependencies:
+              - ${workspace.file_path}/artifacts/nemweb_datasource-2.11.0-py3-none-any.whl
+              - databricks-feature-engineering>=0.14.0
+              - xgboost
+
     prediction_pipeline_job:
       name: "${var.project_name} - Prediction Pipeline Refresh [${var.environment}]"
       tasks:
