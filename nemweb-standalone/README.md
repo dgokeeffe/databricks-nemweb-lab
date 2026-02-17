@@ -88,6 +88,7 @@ python nemweb.py DISPATCHPRICE --hours 1 -v
 | `DISPATCH_UNIT_SCADA` | Real-time unit generation per DUID (5-min) |
 | `DISPATCH_REGION` | Comprehensive dispatch with FCAS prices (5-min) |
 | `DISPATCH_INTERCONNECTOR` | Interconnector dispatch details (5-min) |
+| `DISPATCH_INTERCONNECTOR_TRADING` | Metered interconnector flows (5-min) |
 | `ROOFTOP_PV_ACTUAL` | Rooftop solar generation estimates |
 
 ## NEM regions

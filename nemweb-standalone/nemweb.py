@@ -98,6 +98,13 @@ TABLE_CONFIG = {
         "record_type": "DINT,",
         "description": "Interconnector dispatch details (5-min)",
     },
+    "DISPATCH_INTERCONNECTOR_TRADING": {
+        "folder": "Dispatch_Reports",
+        "file_prefix": "DISPATCH",
+        "file_suffix": "_LEGACY",
+        "record_type": "TINT,",
+        "description": "Metered interconnector flows (5-min)",
+    },
 }
 
 
