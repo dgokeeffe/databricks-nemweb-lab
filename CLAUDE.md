@@ -90,10 +90,10 @@ NEMWEB API (HTTP/ZIP/CSV) → Custom Datasource → Lakeflow Pipeline (Bronze/Si
 | `DISPATCHPRICE` | DispatchIS_Reports | 5-min | Regional spot prices (RRP) |
 | `TRADINGPRICE` | TradingIS_Reports | 30-min | Trading period prices |
 | `DISPATCH_UNIT_SCADA` | Dispatch_SCADA | 5-min | Real-time unit generation (per DUID) |
-| `P5MIN_REGIONSOLUTION` | P5_Reports | 5-min | Pre-dispatch price/demand forecasts |
-| `P5MIN_INTERCONNECTORSOLN` | P5_Reports | 5-min | Interconnector flow forecasts |
-| `BIDPEROFFER_D` | Bidmove_Complete | Daily | Generator bids per period (BANDAVAIL1-10, MAXAVAIL) |
-| `BIDDAYOFFER_D` | Bidmove_Complete | Daily | Generator daily offers (PRICEBAND1-10) |
+| `ROOFTOP_PV_ACTUAL` | ROOFTOP_PV/ACTUAL | 5-min | Rooftop solar generation estimates |
+| `DISPATCH_REGION` | Dispatch_Reports | 5-min | Comprehensive dispatch with FCAS prices |
+| `DISPATCH_INTERCONNECTOR` | Dispatch_Reports | 5-min | Interconnector dispatch details |
+| `DISPATCH_INTERCONNECTOR_TRADING` | Dispatch_Reports | 5-min | Metered interconnector flows |
 
 ### Usage
 
