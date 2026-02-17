@@ -1,0 +1,229 @@
+# Bundle for databricks-nemweb-ml-lab only (Load Forecasting / Market Modelling workshops).
+# Run from this directory: cd databricks-nemweb-ml-lab && databricks bundle deploy --profile daveok --var="environment=dev"
+# Direct deployment engine (CLI 0.279+): https://docs.databricks.com/gcp/en/dev-tools/bundles/direct
+# First deploy (no state): DATABRICKS_BUNDLE_ENGINE=direct databricks bundle deploy -t dev
+bundle:
+  name: nemweb-ml-lab
+  databricks_cli_version: ">= 0.283.0"
+
+artifacts:
+  nemweb_datasource:
+    type: whl
+    path: "../nemweb-data-source"
+    build: "cd ../nemweb-data-source && rm -f dist/*.whl && uv build --wheel --out-dir dist && mkdir -p ../databricks-nemweb-ml-lab/artifacts && cp dist/nemweb_datasource-*.whl ../databricks-nemweb-ml-lab/artifacts/"
+
+variables:
+  project_name:
+    description: "NEMWEB ML Lab name"
+    default: "nemweb-ml-lab"
+  catalog:
+    description: "Unity Catalog catalog name"
+    default: "workspace"
+  schema:
+    description: "Schema for ML workshops (use ml_workshops)"
+    default: "ml_workshops"
+  environment:
+    description: "Deployment environment (dev, staging, prod)"
+    default: "dev"
+
+sync:
+  include:
+    - "pipelines/**"
+    - "workshops/**"
+    - "app/**"
+    - "artifacts/**"
+  exclude:
+    - "**/__pycache__/**"
+    - "**/.pytest_cache/**"
+
+targets:
+  dev:
+    default: true
+    mode: development
+    # User-specific path under Shared so pipeline run identity can read the notebook
+    workspace:
+      root_path: /Workspace/Shared/nemweb-ml-lab/${workspace.current_user.userName}/dev
+  prod:
+    mode: production
+
+resources:
+  pipelines:
+    nemweb_ml_pipeline:
+      name: "${var.project_name}-ml-pipeline-${var.environment}"
+      serverless: true
+      catalog: "${var.catalog}"
+      schema: "${var.schema}"
+      libraries:
+        - notebook:
+            path: ${workspace.file_path}/pipelines/nemweb_ml_pipeline.py
+      configuration:
+        bundle.sourcePath: ${workspace.file_path}/pipelines
+        pipeline.catalog: "${var.catalog}"
+        pipeline.schema: "${var.schema}"
+
+    nemweb_streaming_pipeline:
+      name: "${var.project_name}-streaming-pipeline-${var.environment}"
+      serverless: true
+      catalog: "${var.catalog}"
+      schema: "${var.schema}"
+      libraries:
+        - notebook:
+            path: ${workspace.file_path}/pipelines/nemweb_streaming_pipeline.py
+      environment:
+        dependencies:
+          - ${workspace.file_path}/artifacts/nemweb_datasource-2.11.0-py3-none-any.whl
+      configuration:
+        bundle.sourcePath: ${workspace.file_path}/pipelines
+        pipeline.catalog: "${var.catalog}"
+        pipeline.schema: "${var.schema}"
+
+    nemweb_prediction_pipeline:
+      name: "${var.project_name}-prediction-pipeline-${var.environment}"
+      serverless: true
+      catalog: "${var.catalog}"
+      schema: "${var.schema}"
+      libraries:
+        - notebook:
+            path: ${workspace.file_path}/pipelines/nemweb_prediction_pipeline.py
+        - file:
+            path: ${workspace.file_path}/pipelines/ml_features.py
+      environment:
+        dependencies:
+          - ${workspace.file_path}/artifacts/nemweb_datasource-2.11.0-py3-none-any.whl
+          - xgboost
+      configuration:
+        bundle.sourcePath: ${workspace.file_path}/pipelines
+        pipeline.catalog: "${var.catalog}"
+        pipeline.schema: "${var.schema}"
+
+  jobs:
+    ml_workshop_data_setup:
+      name: "${var.project_name} - ML Workshop Data Setup [${var.environment}]"
+      tasks:
+        - task_key: setup_schema_and_data
+          environment_key: serverless_with_wheel
+          notebook_task:
+            notebook_path: ./workshops/00_data_setup.py
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+              days_history: "30"
+        - task_key: run_ml_pipeline
+          depends_on:
+            - task_key: setup_schema_and_data
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.nemweb_ml_pipeline.id}
+            full_refresh: true
+      environments:
+        - environment_key: serverless_with_wheel
+          spec:
+            environment_version: "4"
+            dependencies:
+              - ${workspace.file_path}/artifacts/nemweb_datasource-2.11.0-py3-none-any.whl
+
+    ml_workshop:
+      name: "${var.project_name} - ML Workshop [${var.environment}]"
+      tasks:
+        - task_key: run_workshop
+          environment_key: serverless_ml
+          notebook_task:
+            notebook_path: ./workshops/01_ml_workshop.py
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+      environments:
+        - environment_key: serverless_ml
+          spec:
+            environment_version: "4"
+            dependencies:
+              - ${workspace.file_path}/artifacts/nemweb_datasource-2.11.0-py3-none-any.whl
+              - xgboost
+              - lightgbm
+
+    nemweb_ml_pipeline_job:
+      name: "${var.project_name} - ML Pipeline Refresh [${var.environment}]"
+      tasks:
+        - task_key: refresh_ml_pipeline
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.nemweb_ml_pipeline.id}
+
+    streaming_pipeline_job:
+      name: "${var.project_name} - Streaming Pipeline Refresh [${var.environment}]"
+      tasks:
+        - task_key: refresh_streaming_pipeline
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.nemweb_streaming_pipeline.id}
+
+    load_forecast_workshop:
+      name: "${var.project_name} - Load Forecast Workshop [${var.environment}]"
+      tasks:
+        - task_key: run_workshop
+          environment_key: serverless_ml
+          notebook_task:
+            notebook_path: ./workshops/02_load_forecast_workshop.py
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+      environments:
+        - environment_key: serverless_ml
+          spec:
+            environment_version: "4"
+            dependencies:
+              - ${workspace.file_path}/artifacts/nemweb_datasource-2.11.0-py3-none-any.whl
+              - xgboost
+
+    market_modelling_workshop:
+      name: "${var.project_name} - Market Modelling Workshop [${var.environment}]"
+      tasks:
+        - task_key: run_workshop
+          environment_key: serverless_ml
+          notebook_task:
+            notebook_path: ./workshops/03_market_modelling_workshop.py
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+      environments:
+        - environment_key: serverless_ml
+          spec:
+            environment_version: "4"
+            dependencies:
+              - ${workspace.file_path}/artifacts/nemweb_datasource-2.11.0-py3-none-any.whl
+              - xgboost
+
+    prediction_pipeline_job:
+      name: "${var.project_name} - Prediction Pipeline Refresh [${var.environment}]"
+      tasks:
+        - task_key: refresh_predictions
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.nemweb_prediction_pipeline.id}
+
+    e2e_demo:
+      name: "${var.project_name} - E2E Demo [${var.environment}]"
+      tasks:
+        - task_key: train_load_forecast
+          environment_key: serverless_ml
+          notebook_task:
+            notebook_path: ./workshops/02_load_forecast_workshop.py
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+        - task_key: train_price_forecast
+          environment_key: serverless_ml
+          notebook_task:
+            notebook_path: ./workshops/03_market_modelling_workshop.py
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+        - task_key: refresh_predictions
+          depends_on:
+            - task_key: train_load_forecast
+            - task_key: train_price_forecast
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.nemweb_prediction_pipeline.id}
+      environments:
+        - environment_key: serverless_ml
+          spec:
+            environment_version: "4"
+            dependencies:
+              - ${workspace.file_path}/artifacts/nemweb_datasource-2.11.0-py3-none-any.whl
+              - xgboost
