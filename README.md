@@ -63,20 +63,22 @@ databricks bundle run nemweb_lab_workflow --target dev
 ## Project Structure
 
 ```
-databricks-nemweb-lab/
-├── databricks.yml              # Asset bundle configuration
-├── databricks-nemweb-lab/
-│   ├── src/                    # Core Python library
-│   │   ├── nemweb_datasource.py   # Custom PySpark data source
-│   │   ├── nemweb_utils.py        # HTTP utilities with retry logic
-│   │   ├── nemweb_sink.py         # Custom sinks (alerts, metrics)
-│   │   └── pipeline/              # Lakeflow pipeline definitions
-│   ├── notebooks/              # Lab exercises (participants)
-│   ├── solutions/              # Reference solutions (instructors)
-│   ├── app/                    # Databricks App dashboard
-│   └── docs/                   # Lab documentation
-├── requirements.txt            # Python dependencies
-└── env.example                 # Environment variable template
+├── databricks.yml                 # Asset bundle configuration
+├── nemweb-data-source/            # Custom PySpark Data Source (wheel package)
+│   ├── nemweb_datasource_arrow.py # PyArrow-based data source (production)
+│   ├── nemweb_utils.py            # HTTP utilities with retry logic
+│   ├── nemweb_sink.py             # Custom sinks (alerts, metrics)
+│   └── tests/                     # Unit tests
+├── nemweb-standalone/             # Pure Python utility (no Spark required)
+│   └── nemweb.py                  # Single-file loader, stdlib only
+├── databricks-nemweb-lab/         # Hands-on lab materials
+│   ├── exercises/                 # Lab exercises (participants)
+│   ├── solutions/                 # Reference solutions (instructors)
+│   ├── pipelines/                 # Lakeflow pipeline definitions
+│   ├── workshops/                 # ML workshop modules
+│   ├── app/                       # Databricks App dashboard
+│   └── artifacts/                 # Built wheel for deployment
+└── databricks-nemweb-analyst-lab/ # Analytics demo workshop
 ```
 
 ## Configuration
@@ -93,14 +95,31 @@ NEMWEB_SCHEMA=nemweb_lab
 ## Local Development
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Install data source package (use uv)
+cd nemweb-data-source && uv pip install -e .
 
-# Run tests
-cd databricks-nemweb-lab && python -m pytest src/tests/ -v
+# Run data source tests
+cd nemweb-data-source && uv run python -m pytest tests/ -v
+
+# Run standalone utility tests
+cd nemweb-standalone && uv run python -m pytest test_nemweb.py -v
 
 # Run dashboard locally
 cd databricks-nemweb-lab/app && gunicorn app:server -b 0.0.0.0:8050
+```
+
+## Standalone Usage (No Spark)
+
+For quick data access without Spark infrastructure:
+
+```python
+from nemweb import fetch, list_tables
+
+# Fetch last hour of price data
+data = fetch("DISPATCHPRICE", hours=1)
+
+# Get as pandas DataFrame
+df = fetch("DISPATCHPRICE", hours=1, as_pandas=True)
 ```
 
 ## Contributing
