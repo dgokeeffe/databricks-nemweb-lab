@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from pyspark.sql.types import StructType
 
 # Import types needed at runtime (not just for type checking)
-from pyspark.sql.types import DoubleType, TimestampType
+from pyspark.sql.types import DoubleType, StringType, TimestampType
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +137,236 @@ USER_AGENT = "DatabricksNemwebLab/1.0"
 # Retry configuration
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.0  # seconds
+
+# Comprehensive schema definitions for all supported tables.
+# Each entry has a record_type (for NEMWEB multi-record CSV filtering) and
+# fields list of (name, SparkType) tuples. Used by both batch and streaming
+# data sources to avoid duplicating schema definitions.
+SCHEMAS = {
+    "DISPATCHREGIONSUM": {
+        "record_type": "DISPATCH,REGIONSUM",
+        "fields": [
+            ("SETTLEMENTDATE", TimestampType()),
+            ("RUNNO", StringType()),
+            ("REGIONID", StringType()),
+            ("DISPATCHINTERVAL", StringType()),
+            ("INTERVENTION", StringType()),
+            ("TOTALDEMAND", DoubleType()),
+            ("AVAILABLEGENERATION", DoubleType()),
+            ("AVAILABLELOAD", DoubleType()),
+            ("DEMANDFORECAST", DoubleType()),
+            ("DISPATCHABLEGENERATION", DoubleType()),
+            ("DISPATCHABLELOAD", DoubleType()),
+            ("NETINTERCHANGE", DoubleType()),
+        ],
+    },
+    "DISPATCHPRICE": {
+        "record_type": "DISPATCH,PRICE",
+        "fields": [
+            ("SETTLEMENTDATE", TimestampType()),
+            ("RUNNO", StringType()),
+            ("REGIONID", StringType()),
+            ("DISPATCHINTERVAL", StringType()),
+            ("INTERVENTION", StringType()),
+            ("RRP", DoubleType()),
+            ("EEP", DoubleType()),
+            ("ROP", DoubleType()),
+            ("APCFLAG", StringType()),
+            ("MARKETSUSPENDEDFLAG", StringType()),
+        ],
+    },
+    "TRADINGPRICE": {
+        "record_type": "TRADING,PRICE",
+        "fields": [
+            ("SETTLEMENTDATE", TimestampType()),
+            ("RUNNO", StringType()),
+            ("REGIONID", StringType()),
+            ("PERIODID", StringType()),
+            ("RRP", DoubleType()),
+            ("EEP", DoubleType()),
+            ("INVALIDFLAG", StringType()),
+        ],
+    },
+    "DISPATCH_UNIT_SCADA": {
+        "record_type": "DISPATCH,UNIT_SCADA",
+        "fields": [
+            ("SETTLEMENTDATE", TimestampType()),
+            ("DUID", StringType()),
+            ("SCADAVALUE", DoubleType()),
+            ("LASTCHANGED", TimestampType()),
+        ],
+    },
+    "ROOFTOP_PV_ACTUAL": {
+        "record_type": None,  # Standard CSV format, not multi-record
+        "fields": [
+            ("INTERVAL_DATETIME", TimestampType()),
+            ("REGIONID", StringType()),
+            ("POWER", DoubleType()),
+            ("QI", DoubleType()),
+            ("TYPE", StringType()),
+            ("LASTCHANGED", TimestampType()),
+        ],
+    },
+    "DISPATCH_REGION": {
+        "record_type": "DREGION,",
+        "fields": [
+            ("SETTLEMENTDATE", TimestampType()),
+            ("RUNNO", StringType()),
+            ("REGIONID", StringType()),
+            ("INTERVENTION", StringType()),
+            ("RRP", DoubleType()),
+            ("EEP", DoubleType()),
+            ("ROP", DoubleType()),
+            ("APCFLAG", StringType()),
+            ("MARKETSUSPENDEDFLAG", StringType()),
+            ("TOTALDEMAND", DoubleType()),
+            ("DEMANDFORECAST", DoubleType()),
+            ("DISPATCHABLEGENERATION", DoubleType()),
+            ("DISPATCHABLELOAD", DoubleType()),
+            ("NETINTERCHANGE", DoubleType()),
+            ("AVAILABLEGENERATION", DoubleType()),
+            ("AVAILABLELOAD", DoubleType()),
+            ("CLEAREDSUPPLY", DoubleType()),
+            ("RAISE6SECRRP", DoubleType()),
+            ("RAISE60SECRRP", DoubleType()),
+            ("RAISE5MINRRP", DoubleType()),
+            ("LOWER6SECRRP", DoubleType()),
+            ("LOWER60SECRRP", DoubleType()),
+            ("LOWER5MINRRP", DoubleType()),
+        ],
+    },
+    "DISPATCH_INTERCONNECTOR": {
+        "record_type": "DINT,",
+        "fields": [
+            ("SETTLEMENTDATE", TimestampType()),
+            ("RUNNO", StringType()),
+            ("INTERCONNECTORID", StringType()),
+            ("INTERVENTION", StringType()),
+            ("METEREDMWFLOW", DoubleType()),
+            ("MWFLOW", DoubleType()),
+            ("MWLOSSES", DoubleType()),
+            ("MARGINALVALUE", DoubleType()),
+            ("VIOLATIONDEGREE", DoubleType()),
+            ("IMPORTLIMIT", DoubleType()),
+            ("EXPORTLIMIT", DoubleType()),
+            ("MARGINALLOSS", DoubleType()),
+            ("EXPORTGENCONID", StringType()),
+            ("IMPORTGENCONID", StringType()),
+        ],
+    },
+    "DISPATCH_INTERCONNECTOR_TRADING": {
+        "record_type": "TINT,",
+        "fields": [
+            ("SETTLEMENTDATE", TimestampType()),
+            ("RUNNO", StringType()),
+            ("INTERCONNECTORID", StringType()),
+            ("METEREDMWFLOW", DoubleType()),
+            ("MWFLOW", DoubleType()),
+            ("MWLOSSES", DoubleType()),
+        ],
+    },
+}
+
+
+def get_table_schema(table: str) -> "StructType":
+    """
+    Build a StructType from the SCHEMAS dict for the given table.
+
+    Unlike get_nemweb_schema() which uses StringType for SETTLEMENTDATE
+    (for Serverless compat), this returns the native types defined in SCHEMAS
+    (TimestampType for datetime columns).
+
+    Args:
+        table: MMS table name (e.g., DISPATCHREGIONSUM)
+
+    Returns:
+        StructType with proper field types
+
+    Raises:
+        ValueError: If table is not in SCHEMAS
+    """
+    from pyspark.sql.types import StructType, StructField
+
+    if table not in SCHEMAS:
+        raise ValueError(f"Unknown table: {table}. Supported: {list(SCHEMAS.keys())}")
+
+    fields = SCHEMAS[table]["fields"]
+    return StructType([
+        StructField(name, dtype, True)
+        for name, dtype in fields
+    ])
+
+
+def extract_rows_from_zip(zip_data: io.BytesIO, record_type: Optional[str] = None) -> list[dict]:
+    """
+    Extract and parse CSV rows from a NEMWEB ZIP file.
+
+    Handles both standard ZIPs (CURRENT format with CSVs directly inside)
+    and nested ZIPs (ARCHIVE format with ZIPs inside the outer ZIP).
+
+    Args:
+        zip_data: BytesIO containing the ZIP file data
+        record_type: NEMWEB record type to filter (e.g., "DISPATCH,REGIONSUM").
+                     If None, uses standard CSV parsing (for ROOFTOP_PV_ACTUAL).
+
+    Returns:
+        List of dictionaries representing parsed rows
+    """
+    rows = []
+    with zipfile.ZipFile(zip_data) as zf:
+        for name in zf.namelist():
+            # Handle nested ZIPs (ARCHIVE format)
+            if name.lower().endswith(".zip"):
+                with zf.open(name) as nested_zip_file:
+                    nested_zip_data = io.BytesIO(nested_zip_file.read())
+                    with zipfile.ZipFile(nested_zip_data) as nested_zf:
+                        for nested_name in nested_zf.namelist():
+                            if nested_name.upper().endswith(".CSV"):
+                                with nested_zf.open(nested_name) as csv_file:
+                                    rows.extend(_parse_nemweb_csv_file(csv_file, record_type))
+
+            # Direct CSVs (CURRENT format)
+            elif name.upper().endswith(".CSV"):
+                with zf.open(name) as csv_file:
+                    rows.extend(_parse_nemweb_csv_file(csv_file, record_type))
+
+    return rows
+
+
+def list_current_files(folder: str, file_prefix: str, file_suffix: str = "") -> list[str]:
+    """
+    List ZIP files in the NEMWEB CURRENT directory for a given folder/prefix.
+
+    Fetches the HTML directory listing and extracts filenames matching the
+    expected pattern.
+
+    Args:
+        folder: NEMWEB folder name (e.g., "DispatchIS_Reports")
+        file_prefix: File prefix (e.g., "DISPATCHIS")
+        file_suffix: Optional suffix (e.g., "_LEGACY" for Dispatch_Reports tables)
+
+    Returns:
+        List of matching filenames (deduplicated)
+    """
+    import re
+
+    url = f"{NEMWEB_CURRENT_URL}/{folder}/"
+
+    try:
+        request = Request(url, headers={"User-Agent": USER_AGENT})
+        with urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+            html = response.read().decode('utf-8')
+    except (HTTPError, URLError) as e:
+        logger.error(f"Failed to list CURRENT directory {url}: {e}")
+        return []
+
+    if file_suffix:
+        pattern = rf'(PUBLIC_{file_prefix}_\d{{12}}_\d{{14}}{file_suffix}\.zip)'
+    else:
+        pattern = rf'(PUBLIC_{file_prefix}_\d{{12}}_\d+\.zip)'
+
+    matches = re.findall(pattern, html, re.IGNORECASE)
+    return sorted(set(matches))
 
 
 def fetch_with_retry(

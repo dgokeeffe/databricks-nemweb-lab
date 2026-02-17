@@ -1,23 +1,32 @@
 """
 NEMWEB File Ingestion
 
-Downloads NEMWEB ZIP files to a Unity Catalog Volume for subsequent processing.
-Supports parallel downloads for faster ingestion.
+Downloads NEMWEB ZIP files to a Unity Catalog Volume and extracts CSVs for
+Auto Loader streaming. Supports parallel downloads for faster ingestion.
 
 Usage:
-    from nemweb_ingest import download_nemweb_files
+    from nemweb_ingest import download_nemweb_files, extract_to_csv
 
-    # Download 6 months of data to UC Volume
+    # Download 7 days of data to UC Volume
     files = download_nemweb_files(
-        volume_path="/Volumes/main/nemweb_lab/raw_files",
+        volume_path="/Volumes/main/ml_workshops/raw_files",
         table="DISPATCHREGIONSUM",
-        start_date="2024-07-01",
-        end_date="2024-12-31",
+        start_date="2024-01-01",
+        end_date="2024-01-07",
         max_workers=8
+    )
+
+    # Extract CSVs for Auto Loader
+    extract_to_csv(
+        zip_path="/Volumes/main/ml_workshops/raw_files",
+        csv_path="/Volumes/main/ml_workshops/extracted_csv",
+        table="DISPATCHREGIONSUM"
     )
 """
 
 import os
+import io
+import zipfile
 import logging
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -25,33 +34,22 @@ from typing import Optional
 from urllib.request import urlopen, Request
 from urllib.error import HTTPError, URLError
 
+from nemweb_utils import (
+    TABLE_CONFIG,
+    NEMWEB_CURRENT_URL,
+    NEMWEB_ARCHIVE_URL,
+    USER_AGENT,
+    REQUEST_TIMEOUT,
+    MAX_RETRIES,
+    RETRY_BASE_DELAY,
+)
+
 logger = logging.getLogger(__name__)
 
-# NEMWEB URLs
-NEMWEB_CURRENT_URL = "https://www.nemweb.com.au/REPORTS/CURRENT"
-NEMWEB_ARCHIVE_URL = "https://www.nemweb.com.au/REPORTS/ARCHIVE"
 
-# Request settings
-REQUEST_TIMEOUT = 60
-USER_AGENT = "DatabricksNemwebLab/1.0"
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.0
-
-# Table configurations
-TABLE_CONFIG = {
-    "DISPATCHREGIONSUM": {
-        "folder": "DispatchIS_Reports",
-        "file_prefix": "DISPATCHIS",
-    },
-    "DISPATCHPRICE": {
-        "folder": "DispatchIS_Reports",
-        "file_prefix": "DISPATCHIS",
-    },
-    "TRADINGPRICE": {
-        "folder": "TradingIS_Reports",
-        "file_prefix": "TRADINGIS",
-    },
-}
+def get_supported_tables() -> list[str]:
+    """Return list of supported NEMWEB table names."""
+    return list(TABLE_CONFIG.keys())
 
 
 def _build_url(folder: str, file_prefix: str, date: datetime) -> str:
@@ -150,9 +148,9 @@ def download_nemweb_files(
 
     config = TABLE_CONFIG[table]
 
-    # Create volume subdirectory for this table
-    table_path = os.path.join(volume_path, table.lower())
-    os.makedirs(table_path, exist_ok=True)
+    # Create volume subdirectory using file_prefix (groups related tables together)
+    prefix_path = os.path.join(volume_path, config["file_prefix"].lower())
+    os.makedirs(prefix_path, exist_ok=True)
 
     # Generate list of dates
     start = datetime.strptime(start_date, "%Y-%m-%d")
@@ -164,7 +162,7 @@ def download_nemweb_files(
     while current <= end:
         date_str = current.strftime("%Y%m%d")
         filename = f"PUBLIC_{config['file_prefix']}_{date_str}.zip"
-        dest_path = os.path.join(table_path, filename)
+        dest_path = os.path.join(prefix_path, filename)
 
         # Skip if file exists and skip_existing is True
         if skip_existing and os.path.exists(dest_path):
@@ -189,11 +187,10 @@ def download_nemweb_files(
     to_download = [t for t in tasks if not t["skip"]]
     skipped = [t for t in tasks if t["skip"]]
 
-    print(f"NEMWEB Download: {len(tasks)} days total")
+    print(f"NEMWEB Download [{table}]: {len(tasks)} days total")
     print(f"  - To download: {len(to_download)}")
     print(f"  - Already exists: {len(skipped)}")
-    print(f"  - Destination: {table_path}")
-    print(f"  - Parallel workers: {max_workers}")
+    print(f"  - Destination: {prefix_path}")
 
     results = []
 
@@ -210,7 +207,7 @@ def download_nemweb_files(
 
     # Download files in parallel
     if to_download:
-        print(f"\nDownloading {len(to_download)} files...")
+        print(f"  Downloading {len(to_download)} files...")
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_task = {
@@ -227,7 +224,7 @@ def download_nemweb_files(
 
                 # Progress indicator
                 if completed % 10 == 0 or completed == len(to_download):
-                    print(f"  Progress: {completed}/{len(to_download)}")
+                    print(f"    Progress: {completed}/{len(to_download)}")
 
     # Summary
     successful = sum(1 for r in results if r["success"])
@@ -235,24 +232,228 @@ def download_nemweb_files(
     not_found = sum(1 for r in results if r.get("error") == "not_found")
     total_size = sum(r["size"] for r in results)
 
-    print(f"\nDownload complete:")
-    print(f"  - Successful: {successful}")
-    print(f"  - Not found (no data): {not_found}")
-    print(f"  - Failed: {failed}")
-    print(f"  - Total size: {total_size / 1024 / 1024:.1f} MB")
+    print(f"  Complete: {successful} ok, {not_found} not found, {failed} failed ({total_size / 1024 / 1024:.1f} MB)")
+
+    return results
+
+
+def download_all_tables(
+    volume_path: str,
+    start_date: str = "2024-01-01",
+    end_date: str = "2024-01-07",
+    max_workers: int = 8,
+    skip_existing: bool = True,
+    tables: Optional[list[str]] = None
+) -> dict[str, list[dict]]:
+    """
+    Download all NEMWEB tables to a UC Volume.
+
+    Args:
+        volume_path: Path to UC Volume
+        start_date: Start date (YYYY-MM-DD)
+        end_date: End date (YYYY-MM-DD)
+        max_workers: Number of parallel download threads
+        skip_existing: Skip files that already exist
+        tables: List of tables to download (default: all)
+
+    Returns:
+        Dict mapping table name to list of download results
+    """
+    if tables is None:
+        tables = list(TABLE_CONFIG.keys())
+
+    results = {}
+    for table in tables:
+        results[table] = download_nemweb_files(
+            volume_path=volume_path,
+            table=table,
+            start_date=start_date,
+            end_date=end_date,
+            max_workers=max_workers,
+            skip_existing=skip_existing
+        )
+
+    return results
+
+
+def _extract_records(csv_file, record_type: str) -> list[str]:
+    """Extract rows matching the specified record type from a NEMWEB CSV."""
+    import codecs
+
+    rows = []
+    reader = codecs.getreader('utf-8')(csv_file)
+    header = None
+
+    for line in reader:
+        line = line.strip()
+        if not line:
+            continue
+
+        parts = line.split(',')
+        if len(parts) < 3:
+            continue
+
+        row_type = parts[0]
+        record_id = f"{parts[1]},{parts[2]}" if len(parts) > 2 else ""
+
+        # Capture header for this record type
+        if row_type == "I" and record_id == record_type:
+            header = line
+        # Capture data rows
+        elif row_type == "D" and record_id == record_type:
+            if header and not rows:
+                # Include header as first row
+                rows.append(header)
+            rows.append(line)
+
+    return rows
+
+
+def extract_to_csv(
+    zip_path: str,
+    csv_path: str,
+    table: str = "DISPATCHREGIONSUM",
+    skip_existing: bool = True
+) -> dict:
+    """
+    Extract and filter CSV records from downloaded ZIP files.
+
+    Reads ZIP files from zip_path, extracts records matching the table's
+    record_type, and writes them to csv_path for Auto Loader streaming.
+
+    Args:
+        zip_path: Path to downloaded ZIP files (e.g., /Volumes/.../raw_files)
+        csv_path: Path to write extracted CSVs (e.g., /Volumes/.../extracted_csv)
+        table: NEMWEB table name
+        skip_existing: Skip CSV files that already exist
+
+    Returns:
+        Dict with extraction summary
+    """
+    if table not in TABLE_CONFIG:
+        raise ValueError(f"Unsupported table: {table}. Supported: {list(TABLE_CONFIG.keys())}")
+
+    config = TABLE_CONFIG[table]
+    record_type = config["record_type"]
+
+    # Source: ZIP files are stored by file_prefix
+    source_path = os.path.join(zip_path, config["file_prefix"].lower())
+    # Destination: CSVs are stored by table name
+    dest_path = os.path.join(csv_path, table.lower())
+    os.makedirs(dest_path, exist_ok=True)
+
+    if not os.path.exists(source_path):
+        print(f"Source path does not exist: {source_path}")
+        return {"table": table, "extracted": 0, "skipped": 0, "total_rows": 0}
+
+    # Find ZIP files
+    zip_files = [f for f in os.listdir(source_path) if f.endswith('.zip')]
+
+    extracted = 0
+    skipped = 0
+    total_rows = 0
+
+    for zip_filename in sorted(zip_files):
+        # Extract date from filename (PUBLIC_DISPATCHIS_YYYYMMDD.zip)
+        parts = zip_filename.replace('.zip', '').split('_')
+        if len(parts) >= 3:
+            date_str = parts[-1]
+        else:
+            continue
+
+        csv_filename = f"{table.lower()}_{date_str}.csv"
+        csv_filepath = os.path.join(dest_path, csv_filename)
+
+        # Skip if already extracted
+        if skip_existing and os.path.exists(csv_filepath):
+            skipped += 1
+            continue
+
+        # Read and extract from ZIP
+        zip_filepath = os.path.join(source_path, zip_filename)
+        try:
+            with open(zip_filepath, 'rb') as f:
+                zip_data = io.BytesIO(f.read())
+
+            rows = []
+            with zipfile.ZipFile(zip_data) as zf:
+                for name in zf.namelist():
+                    # Handle nested ZIPs
+                    if name.lower().endswith('.zip'):
+                        with zf.open(name) as nested_zip_file:
+                            nested_data = io.BytesIO(nested_zip_file.read())
+                            with zipfile.ZipFile(nested_data) as nested_zf:
+                                for nested_name in nested_zf.namelist():
+                                    if nested_name.upper().endswith('.CSV'):
+                                        with nested_zf.open(nested_name) as csv_file:
+                                            rows.extend(_extract_records(csv_file, record_type))
+                    # Direct CSV files
+                    elif name.upper().endswith('.CSV'):
+                        with zf.open(name) as csv_file:
+                            rows.extend(_extract_records(csv_file, record_type))
+
+            # Write extracted CSV
+            if rows:
+                with open(csv_filepath, 'w') as out_f:
+                    for row in rows:
+                        out_f.write(row + '\n')
+                extracted += 1
+                total_rows += len(rows)
+
+        except Exception as e:
+            logger.warning(f"Error extracting {zip_filename}: {e}")
+
+    print(f"Extract [{table}]: {extracted} files, {skipped} skipped, {total_rows} rows")
+    return {"table": table, "extracted": extracted, "skipped": skipped, "total_rows": total_rows}
+
+
+def extract_all_tables(
+    zip_path: str,
+    csv_path: str,
+    tables: Optional[list[str]] = None,
+    skip_existing: bool = True
+) -> dict[str, dict]:
+    """
+    Extract CSVs for all NEMWEB tables.
+
+    Args:
+        zip_path: Path to downloaded ZIP files
+        csv_path: Path to write extracted CSVs
+        tables: List of tables to extract (default: all)
+        skip_existing: Skip CSV files that already exist
+
+    Returns:
+        Dict mapping table name to extraction summary
+    """
+    if tables is None:
+        tables = list(TABLE_CONFIG.keys())
+
+    results = {}
+    for table in tables:
+        results[table] = extract_to_csv(
+            zip_path=zip_path,
+            csv_path=csv_path,
+            table=table,
+            skip_existing=skip_existing
+        )
 
     return results
 
 
 def list_downloaded_files(volume_path: str, table: str = "DISPATCHREGIONSUM") -> list[str]:
     """List all downloaded ZIP files for a table."""
-    table_path = os.path.join(volume_path, table.lower())
-    if not os.path.exists(table_path):
+    if table not in TABLE_CONFIG:
+        raise ValueError(f"Unsupported table: {table}")
+
+    config = TABLE_CONFIG[table]
+    prefix_path = os.path.join(volume_path, config["file_prefix"].lower())
+
+    if not os.path.exists(prefix_path):
         return []
 
     files = [
-        os.path.join(table_path, f)
-        for f in os.listdir(table_path)
+        os.path.join(prefix_path, f)
+        for f in os.listdir(prefix_path)
         if f.endswith('.zip')
     ]
     return sorted(files)

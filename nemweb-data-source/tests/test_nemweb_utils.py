@@ -18,9 +18,14 @@ from pyspark.sql.types import (
 
 # Import the module under test (path configured in conftest.py)
 from nemweb_utils import (
+    SCHEMAS,
+    TABLE_CONFIG,
     fetch_with_retry,
     fetch_nemweb_data,
     fetch_nemweb_current,
+    get_table_schema,
+    extract_rows_from_zip,
+    list_current_files,
     _build_nemweb_url,
     _get_sample_data,
     _parse_timestamp_value,
@@ -34,6 +39,18 @@ from nemweb_utils import (
     MAX_RETRIES,
     RETRY_BASE_DELAY,
 )
+
+# All 8 tables that should be in SCHEMAS
+ALL_TABLES = [
+    "DISPATCHREGIONSUM",
+    "DISPATCHPRICE",
+    "TRADINGPRICE",
+    "DISPATCH_UNIT_SCADA",
+    "ROOFTOP_PV_ACTUAL",
+    "DISPATCH_REGION",
+    "DISPATCH_INTERCONNECTOR",
+    "DISPATCH_INTERCONNECTOR_TRADING",
+]
 
 
 class TestFetchWithRetry:
@@ -572,6 +589,228 @@ class TestTableToFolderMapping:
         for table, folder in TABLE_TO_FOLDER.items():
             assert isinstance(table, str)
             assert isinstance(folder, str)
+
+
+class TestSchemas:
+    """Tests for the consolidated SCHEMAS dict."""
+
+    @pytest.mark.parametrize("table", ALL_TABLES)
+    def test_schemas_contains_all_tables(self, table):
+        """SCHEMAS should contain all 8 supported tables."""
+        assert table in SCHEMAS
+
+    @pytest.mark.parametrize("table", ALL_TABLES)
+    def test_schemas_have_record_type(self, table):
+        """Each schema entry should have a record_type."""
+        assert "record_type" in SCHEMAS[table]
+
+    @pytest.mark.parametrize("table", ALL_TABLES)
+    def test_schemas_have_fields(self, table):
+        """Each schema entry should have a non-empty fields list."""
+        assert "fields" in SCHEMAS[table]
+        assert len(SCHEMAS[table]["fields"]) > 0
+
+    def test_rooftop_pv_has_none_record_type(self):
+        """ROOFTOP_PV_ACTUAL uses standard CSV, record_type should be None."""
+        assert SCHEMAS["ROOFTOP_PV_ACTUAL"]["record_type"] is None
+
+    def test_schemas_field_types(self):
+        """Schema fields should be (name, SparkType) tuples with valid types."""
+        valid_types = (TimestampType, StringType, DoubleType)
+        for table, config in SCHEMAS.items():
+            for name, dtype in config["fields"]:
+                assert isinstance(name, str), f"{table}: field name should be str"
+                assert isinstance(dtype, valid_types), f"Invalid type for {table}.{name}"
+
+
+class TestGetTableSchema:
+    """Tests for the get_table_schema helper function."""
+
+    @pytest.mark.parametrize("table", ALL_TABLES)
+    def test_returns_struct_type(self, table):
+        """get_table_schema should return a StructType for all tables."""
+        schema = get_table_schema(table)
+        assert isinstance(schema, StructType)
+        assert len(schema.fields) > 0
+
+    def test_dispatchregionsum_fields(self):
+        """DISPATCHREGIONSUM schema should have expected fields."""
+        schema = get_table_schema("DISPATCHREGIONSUM")
+        field_names = [f.name for f in schema.fields]
+        assert "SETTLEMENTDATE" in field_names
+        assert "REGIONID" in field_names
+        assert "TOTALDEMAND" in field_names
+
+    def test_settlementdate_is_timestamp_type(self):
+        """get_table_schema should use TimestampType for SETTLEMENTDATE."""
+        schema = get_table_schema("DISPATCHREGIONSUM")
+        ts_field = next(f for f in schema.fields if f.name == "SETTLEMENTDATE")
+        assert isinstance(ts_field.dataType, TimestampType)
+
+    def test_raises_for_unknown_table(self):
+        """get_table_schema should raise ValueError for unknown tables."""
+        with pytest.raises(ValueError, match="Unknown table"):
+            get_table_schema("NONEXISTENT_TABLE")
+
+
+class TestExtractRowsFromZip:
+    """Tests for the extract_rows_from_zip utility function."""
+
+    def test_standard_csv_in_zip(self):
+        """Should extract rows from a standard ZIP containing CSVs."""
+        csv_content = b"""C,test
+I,DISPATCH,REGIONSUM,1,SETTLEMENTDATE,RUNNO,REGIONID
+D,DISPATCH,REGIONSUM,1,"2024/01/01 12:05:00",1,NSW1
+D,DISPATCH,REGIONSUM,1,"2024/01/01 12:05:00",1,VIC1
+C,END
+"""
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr("test.CSV", csv_content)
+        zip_buffer.seek(0)
+
+        rows = extract_rows_from_zip(zip_buffer, "DISPATCH,REGIONSUM")
+        assert len(rows) == 2
+        assert rows[0]["REGIONID"] == "NSW1"
+        assert rows[1]["REGIONID"] == "VIC1"
+
+    def test_nested_zip(self):
+        """Should handle nested ZIPs (ARCHIVE format)."""
+        csv_content = b"""C,test
+I,DISPATCH,PRICE,1,SETTLEMENTDATE,REGIONID,RRP
+D,DISPATCH,PRICE,1,"2024/01/01 12:05:00",NSW1,85.5
+C,END
+"""
+        # Create inner ZIP
+        inner_zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(inner_zip_buffer, "w") as inner_zf:
+            inner_zf.writestr("inner.CSV", csv_content)
+
+        # Create outer ZIP containing the inner ZIP
+        outer_zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(outer_zip_buffer, "w") as outer_zf:
+            outer_zf.writestr("inner.zip", inner_zip_buffer.getvalue())
+        outer_zip_buffer.seek(0)
+
+        rows = extract_rows_from_zip(outer_zip_buffer, "DISPATCH,PRICE")
+        assert len(rows) == 1
+        assert rows[0]["RRP"] == "85.5"
+
+    def test_no_record_type_uses_dictreader(self):
+        """Should use csv.DictReader when record_type is None."""
+        csv_content = b"""INTERVAL_DATETIME,REGIONID,POWER,QI,TYPE,LASTCHANGED
+2024/01/01 12:05:00,NSW1,1500.0,0.9,MEASUREMENT,2024/01/01 12:06:00
+"""
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr("rooftop.csv", csv_content)
+        zip_buffer.seek(0)
+
+        rows = extract_rows_from_zip(zip_buffer, record_type=None)
+        assert len(rows) == 1
+        assert rows[0]["REGIONID"] == "NSW1"
+        assert rows[0]["POWER"] == "1500.0"
+
+    def test_empty_zip(self):
+        """Should return empty list for ZIP with no CSV files."""
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr("readme.txt", "no csv here")
+        zip_buffer.seek(0)
+
+        rows = extract_rows_from_zip(zip_buffer, "DISPATCH,REGIONSUM")
+        assert rows == []
+
+
+class TestListCurrentFiles:
+    """Tests for the list_current_files utility function."""
+
+    def test_standard_files(self):
+        """Should find standard-pattern files in HTML listing."""
+        html = """
+        <html><body>
+        <a href="PUBLIC_DISPATCHIS_202401011200_0000000001.zip">file1</a>
+        <a href="PUBLIC_DISPATCHIS_202401011205_0000000002.zip">file2</a>
+        <a href="PUBLIC_DISPATCHIS_202401011210_0000000003.zip">file3</a>
+        </body></html>
+        """
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = html.encode('utf-8')
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        with patch("nemweb_utils.urlopen", return_value=mock_response):
+            files = list_current_files("DispatchIS_Reports", "DISPATCHIS")
+
+        assert len(files) == 3
+        assert "PUBLIC_DISPATCHIS_202401011200_0000000001.zip" in files
+
+    def test_legacy_suffix_files(self):
+        """Should find legacy-pattern files with _LEGACY suffix."""
+        html = """
+        <html><body>
+        <a href="PUBLIC_DISPATCH_202401011200_20240101120015_LEGACY.zip">file1</a>
+        <a href="PUBLIC_DISPATCH_202401011205_20240101120515_LEGACY.zip">file2</a>
+        </body></html>
+        """
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = html.encode('utf-8')
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        with patch("nemweb_utils.urlopen", return_value=mock_response):
+            files = list_current_files("Dispatch_Reports", "DISPATCH", "_LEGACY")
+
+        assert len(files) == 2
+        assert "PUBLIC_DISPATCH_202401011200_20240101120015_LEGACY.zip" in files
+
+    def test_deduplicates_files(self):
+        """Should deduplicate files that appear multiple times in HTML."""
+        html = """
+        <html><body>
+        <a href="PUBLIC_DISPATCHIS_202401011200_0000000001.zip">file1</a>
+        <a href="PUBLIC_DISPATCHIS_202401011200_0000000001.zip">file1 again</a>
+        </body></html>
+        """
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = html.encode('utf-8')
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        with patch("nemweb_utils.urlopen", return_value=mock_response):
+            files = list_current_files("DispatchIS_Reports", "DISPATCHIS")
+
+        assert len(files) == 1
+
+    def test_returns_empty_on_http_error(self):
+        """Should return empty list on HTTP error."""
+        with patch("nemweb_utils.urlopen", side_effect=URLError("connection refused")):
+            files = list_current_files("DispatchIS_Reports", "DISPATCHIS")
+
+        assert files == []
+
+    def test_returns_sorted(self):
+        """Should return sorted filenames."""
+        html = """
+        <html><body>
+        <a href="PUBLIC_DISPATCHIS_202401011210_0000000003.zip">file3</a>
+        <a href="PUBLIC_DISPATCHIS_202401011200_0000000001.zip">file1</a>
+        <a href="PUBLIC_DISPATCHIS_202401011205_0000000002.zip">file2</a>
+        </body></html>
+        """
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = html.encode('utf-8')
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        with patch("nemweb_utils.urlopen", return_value=mock_response):
+            files = list_current_files("DispatchIS_Reports", "DISPATCHIS")
+
+        assert files == sorted(files)
 
 
 if __name__ == "__main__":
