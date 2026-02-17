@@ -39,8 +39,9 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install databricks-feature-engineering>=0.14.0 xgboost
-# MAGIC dbutils.library.restartPython()
+# Dependencies (databricks-feature-engineering>=0.14.0, xgboost) are installed
+# via the job environment spec. For interactive use, uncomment the line below:
+# %pip install databricks-feature-engineering>=0.14.0 xgboost
 
 # COMMAND ----------
 

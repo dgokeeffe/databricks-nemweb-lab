@@ -55,7 +55,7 @@ resources:
       schema: "${var.schema}"
       libraries:
         - notebook:
-            path: ${workspace.file_path}/pipelines/nemweb_ml_pipeline.py
+            path: ${workspace.file_path}/pipelines/nemweb_ml_pipeline
       configuration:
         bundle.sourcePath: ${workspace.file_path}/pipelines
         pipeline.catalog: "${var.catalog}"
@@ -68,7 +68,7 @@ resources:
       schema: "${var.schema}"
       libraries:
         - notebook:
-            path: ${workspace.file_path}/pipelines/nemweb_streaming_pipeline.py
+            path: ${workspace.file_path}/pipelines/nemweb_streaming_pipeline
       environment:
         dependencies:
           - ${workspace.file_path}/artifacts/nemweb_datasource-2.11.0-py3-none-any.whl
@@ -84,7 +84,7 @@ resources:
       schema: "${var.schema}"
       libraries:
         - notebook:
-            path: ${workspace.file_path}/pipelines/nemweb_prediction_pipeline.py
+            path: ${workspace.file_path}/pipelines/nemweb_prediction_pipeline
         - file:
             path: ${workspace.file_path}/pipelines/ml_features.py
       environment:
