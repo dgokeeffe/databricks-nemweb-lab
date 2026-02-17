@@ -1,0 +1,33 @@
+# NEMWEB Streaming Pipeline
+# Ingests live 5-minute dispatch data from AEMO NEMWEB using a custom PySpark
+# streaming data source. Bronze → Silver → Gold medallion architecture.
+#
+# Tables: bronze_dispatch_stream, bronze_price_stream, bronze_p5min_forecast,
+#         bronze_scada_stream, bronze_interconnector_stream, bronze_rooftop_pv_stream,
+#         bronze_bom_weather, silver_demand_weather, silver_forecast_vs_actual,
+#         silver_supply_stack, gold_demand_hourly, gold_price_hourly,
+#         gold_forecast_accuracy, gold_interconnector_hourly
+
+resources:
+  pipelines:
+    nemweb_streaming_pipeline:
+      name: "${var.project_name}-streaming-pipeline-${var.environment}"
+      continuous: true
+      serverless: true
+      catalog: "${var.catalog}"
+      schema: "${var.schema}"
+      root_path: "../src/streaming_pipeline"
+
+      libraries:
+        # Glob picks up register_datasource.py (runs first alphabetically)
+        # plus all transformation files in transformations/
+        - glob:
+            include: ../src/streaming_pipeline/**
+
+      environment:
+        dependencies:
+          - ${workspace.root_path}/artifacts/.internal/nemweb_datasource-2.12.1-py3-none-any.whl
+
+      configuration:
+        pipeline.catalog: "${var.catalog}"
+        pipeline.schema: "${var.schema}"

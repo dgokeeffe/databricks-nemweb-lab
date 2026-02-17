@@ -1,0 +1,21 @@
+resources:
+  apps:
+    nem_forecast:
+      name: "nem-forecast-${var.environment}"
+      description: "NEM Forecast dashboard for load and price predictions"
+      source_code_path: ../app
+      config:
+        command:
+          - gunicorn
+          - app:server
+          - --bind
+          - "0.0.0.0:8000"
+          - --workers
+          - "2"
+        env:
+          - name: DATABRICKS_WAREHOUSE_ID
+            value: "${var.warehouse_id}"
+          - name: NEMWEB_CATALOG
+            value: "${var.catalog}"
+          - name: NEMWEB_SCHEMA
+            value: "${var.schema}"

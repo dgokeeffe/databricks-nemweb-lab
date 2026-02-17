@@ -610,9 +610,9 @@ class TestSchemas:
         assert "fields" in SCHEMAS[table]
         assert len(SCHEMAS[table]["fields"]) > 0
 
-    def test_rooftop_pv_has_none_record_type(self):
-        """ROOFTOP_PV_ACTUAL uses standard CSV, record_type should be None."""
-        assert SCHEMAS["ROOFTOP_PV_ACTUAL"]["record_type"] is None
+    def test_rooftop_pv_has_rooftop_actual_record_type(self):
+        """ROOFTOP_PV_ACTUAL should parse MMS multi-record rows."""
+        assert SCHEMAS["ROOFTOP_PV_ACTUAL"]["record_type"] == "ROOFTOP,ACTUAL"
 
     def test_schemas_field_types(self):
         """Schema fields should be (name, SparkType) tuples with valid types."""

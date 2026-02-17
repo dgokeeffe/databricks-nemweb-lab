@@ -58,6 +58,7 @@ from typing import Iterator, Optional
 from datetime import datetime, timedelta
 import io
 import logging
+import bisect
 
 from nemweb_utils import (
     SCHEMAS,
@@ -251,12 +252,16 @@ class NemwebStreamReader(DataSourceStreamReader):
         self.regions = [r.strip() for r in options.get("regions", "NSW1,QLD1,SA1,VIC1,TAS1").split(",")]
         self.poll_interval = int(options.get("poll_interval_seconds", "60"))
         self.max_files_per_batch = int(options.get("max_files_per_batch", "50"))
+        self.startup_catchup_hours = int(options.get("startup_catchup_hours", "24"))
 
         # Get folder and file prefix for this table from TABLE_CONFIG
         config = TABLE_CONFIG.get(self.table)
         if config:
             self.folder = config["folder"]
-            self.file_prefix = config["file_prefix"]
+            # Some tables have a different naming convention in CURRENT vs ARCHIVE
+            # (e.g., ROOFTOP_PV_ACTUAL uses "ROOFTOP_PV_ACTUAL_SATELLITE" in CURRENT).
+            # streaming_prefix overrides file_prefix for directory listing.
+            self.file_prefix = config.get("streaming_prefix", config["file_prefix"])
             self.file_suffix = config.get("file_suffix", "")
         else:
             self.folder = "DispatchIS_Reports"
@@ -267,6 +272,7 @@ class NemwebStreamReader(DataSourceStreamReader):
         self._file_cache = None
         self._cache_time = None
         self._cache_ttl = self.poll_interval
+        self._last_committed_file = options.get("start_from", "")
 
     def initialOffset(self) -> dict:
         """
@@ -274,15 +280,26 @@ class NemwebStreamReader(DataSourceStreamReader):
 
         Starts from the beginning of today's files to catch up on recent data,
         or from a specific file if configured.
+
+        NEMWEB filenames use AEST (Australian Eastern Standard Time, UTC+10)
+        timestamps, so we must compute the cutoff in AEST regardless of the
+        driver's system timezone (which is UTC on Databricks).
         """
         start_from = self.options.get("start_from")
         if start_from:
+            self._last_committed_file = start_from
             return {"last_file": start_from}
 
-        # Default: start from files in the last hour
-        cutoff = datetime.now() - timedelta(hours=1)
+        # Default: catch up from recent files (in AEST / NEM time).
+        # This reduces startup gaps while keeping bounded replay behavior.
+        from datetime import timezone
+        aest = timezone(timedelta(hours=10))
+        now_aest = datetime.now(aest)
+        cutoff = now_aest - timedelta(hours=self.startup_catchup_hours)
         cutoff_str = cutoff.strftime("%Y%m%d%H%M")
-        return {"last_file": f"PUBLIC_{self.file_prefix}_{cutoff_str}_0000000000.zip"}
+        initial = {"last_file": f"PUBLIC_{self.file_prefix}_{cutoff_str}_0000000000.zip"}
+        self._last_committed_file = initial["last_file"]
+        return initial
 
     def latestOffset(self) -> dict:
         """
@@ -295,8 +312,20 @@ class NemwebStreamReader(DataSourceStreamReader):
         if not files:
             return {"last_file": ""}
 
-        latest_file = sorted(files)[-1]
-        return {"last_file": latest_file}
+        files_sorted = sorted(files)
+        start_file = self._last_committed_file
+        if not start_file:
+            latest_file = files_sorted[-1]
+            return {"last_file": latest_file}
+
+        # Use bisect to safely handle when checkpointed file is no longer in CURRENT.
+        start_idx = bisect.bisect_right(files_sorted, start_file)
+        newer_files = files_sorted[start_idx:]
+        if not newer_files:
+            return {"last_file": start_file}
+
+        bounded_newer = newer_files[:self.max_files_per_batch]
+        return {"last_file": bounded_newer[-1]}
 
     def partitions(self, start: dict, end: dict) -> list:
         """
@@ -318,8 +347,11 @@ class NemwebStreamReader(DataSourceStreamReader):
             if f > start_file and f <= end_file
         ]
 
-        # Limit files per batch to avoid overwhelming the stream
-        files_in_range = files_in_range[:self.max_files_per_batch]
+        # Safety guard: latestOffset should already bound this range.
+        if len(files_in_range) > self.max_files_per_batch:
+            files_in_range = files_in_range[:self.max_files_per_batch]
+            end_file = files_in_range[-1]
+            end["last_file"] = end_file
 
         if not files_in_range:
             return []
@@ -374,6 +406,7 @@ class NemwebStreamReader(DataSourceStreamReader):
 
     def commit(self, end: dict) -> None:
         """Called when a microbatch has been successfully processed."""
+        self._last_committed_file = end.get("last_file", self._last_committed_file)
         logger.info(f"Committed offset: {end}")
 
     def _list_current_files(self) -> list:
@@ -451,6 +484,8 @@ class NemwebStreamDataSource(DataSource):
         poll_interval_seconds: How often to check for new files (streaming, default: 60)
         max_files_per_batch: Maximum files per microbatch (streaming, default: 50)
         start_from: Specific filename to start from (streaming, optional)
+        startup_catchup_hours: Catch-up window when no start_from/checkpoint is present
+                              (streaming, default: 24)
     """
 
     @classmethod

@@ -1,12 +1,20 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # NEMWEB MMS Full Ingest Pipeline
+# MAGIC # NEMWEB MMS Streaming Pipeline
 # MAGIC
-# MAGIC This pipeline ingests all supported NEMWEB MMS tables as bronze tables using
-# MAGIC the custom PySpark datasource. Each table is loaded directly from NEMWEB's
-# MAGIC public API.
+# MAGIC This pipeline uses Auto Loader to stream NEMWEB CSV files from the volume into
+# MAGIC Delta streaming tables. The setup notebook must run first to download and extract
+# MAGIC the CSV files.
 # MAGIC
-# MAGIC ## Bronze Tables Created
+# MAGIC ## Architecture
+# MAGIC - **Bronze**: Streaming tables using Auto Loader (cloudFiles) via @dp.table()
+# MAGIC - **Silver**: Streaming tables with joins and transformations
+# MAGIC - **Gold**: Materialized views for aggregations
+# MAGIC
+# MAGIC Note: In Lakeflow, @dp.table() creates a streaming table when the function returns
+# MAGIC a streaming DataFrame (spark.readStream). There is no separate @dp.table decorator.
+# MAGIC
+# MAGIC ## Bronze Tables
 # MAGIC - `bronze_dispatch_regionsum`: Regional demand/generation (5-min)
 # MAGIC - `bronze_dispatch_price`: Regional spot prices (5-min)
 # MAGIC - `bronze_trading_price`: Trading period prices (30-min)
@@ -15,22 +23,14 @@
 # MAGIC - `bronze_p5min_interconnectorsoln`: Interconnector forecasts (5-min)
 # MAGIC - `bronze_bidperoffer`: Generator bid availability (daily)
 # MAGIC - `bronze_biddayoffer`: Generator price bands (daily)
-# MAGIC
-# MAGIC ## Silver/Gold Layers
-# MAGIC - `silver_dispatch_with_price`: Joined dispatch + price
-# MAGIC - `silver_unit_generation`: Cleansed unit generation
-# MAGIC - `gold_hourly_generation_by_unit`: Hourly generation aggregations
-# MAGIC
-# MAGIC Reference: https://nemweb.com.au/Reports/Current/MMSDataModelReport/
 
 # COMMAND ----------
 
 from pyspark import pipelines as dp
-from pyspark.sql.functions import col, current_timestamp, lit
-
-# Register the custom datasource
-from nemweb_datasource_arrow import NemwebArrowDataSource
-spark.dataSource.register(NemwebArrowDataSource)
+from pyspark.sql.functions import col, current_timestamp, lit, to_timestamp
+from pyspark.sql.types import (
+    StructType, StructField, StringType, DoubleType, TimestampType, IntegerType
+)
 
 # COMMAND ----------
 
@@ -40,290 +40,331 @@ spark.dataSource.register(NemwebArrowDataSource)
 # COMMAND ----------
 
 # Get catalog and schema from pipeline configuration
-# These are set by the bundle's pipeline definition in databricks.yml
-CATALOG = spark.conf.get("pipeline.catalog", "workspace")
+CATALOG = spark.conf.get("pipeline.catalog", "daveok")
 SCHEMA = spark.conf.get("pipeline.schema", "ml_workshops")
 
-# Volume path for downloaded files (dynamically constructed from catalog/schema)
-VOLUME_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/raw_files"
-print(f"Using volume path: {VOLUME_PATH}")
+# Volume path for extracted CSV files
+CSV_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/extracted_csv"
 
-def get_datasource_options(table: str, include_current: bool = True) -> dict:
-    """Get standard options for NEMWEB datasource."""
-    return {
-        "table": table,
-        "include_current": str(include_current).lower(),
-        "volume_path": VOLUME_PATH,
-        "auto_download": "true",
-    }
+print(f"Pipeline config: catalog={CATALOG}, schema={SCHEMA}")
+print(f"CSV path: {CSV_PATH}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Bronze Layer - Dispatch IS Reports (5-minute data)
+# MAGIC ## Schema Definitions
+# MAGIC
+# MAGIC NEMWEB CSV files have a specific format with row type prefix (I=header, D=data).
+
+# COMMAND ----------
+
+# Schema for DISPATCHREGIONSUM
+# Note: NEMWEB CSVs have format: D,DISPATCH,REGIONSUM,<version>,<settlementdate>,...
+SCHEMA_DISPATCH_REGIONSUM = StructType([
+    StructField("ROW_TYPE", StringType()),
+    StructField("RECORD_TYPE1", StringType()),
+    StructField("RECORD_TYPE2", StringType()),
+    StructField("VERSION", StringType()),
+    StructField("SETTLEMENTDATE", StringType()),
+    StructField("RUNNO", StringType()),
+    StructField("REGIONID", StringType()),
+    StructField("DISPATCHINTERVAL", StringType()),
+    StructField("INTERVENTION", StringType()),
+    StructField("TOTALDEMAND", DoubleType()),
+    StructField("AVAILABLEGENERATION", DoubleType()),
+    StructField("AVAILABLELOAD", DoubleType()),
+    StructField("DEMANDFORECAST", DoubleType()),
+    StructField("DISPATCHABLEGENERATION", DoubleType()),
+    StructField("DISPATCHABLELOAD", DoubleType()),
+    StructField("NETINTERCHANGE", DoubleType()),
+])
+
+# Schema for DISPATCHPRICE
+SCHEMA_DISPATCH_PRICE = StructType([
+    StructField("ROW_TYPE", StringType()),
+    StructField("RECORD_TYPE1", StringType()),
+    StructField("RECORD_TYPE2", StringType()),
+    StructField("VERSION", StringType()),
+    StructField("SETTLEMENTDATE", StringType()),
+    StructField("RUNNO", StringType()),
+    StructField("REGIONID", StringType()),
+    StructField("DISPATCHINTERVAL", StringType()),
+    StructField("INTERVENTION", StringType()),
+    StructField("RRP", DoubleType()),
+    StructField("EEP", DoubleType()),
+    StructField("ROP", DoubleType()),
+    StructField("APCFLAG", StringType()),
+    StructField("MARKETSUSPENDEDFLAG", StringType()),
+])
+
+# Schema for TRADINGPRICE
+SCHEMA_TRADING_PRICE = StructType([
+    StructField("ROW_TYPE", StringType()),
+    StructField("RECORD_TYPE1", StringType()),
+    StructField("RECORD_TYPE2", StringType()),
+    StructField("VERSION", StringType()),
+    StructField("SETTLEMENTDATE", StringType()),
+    StructField("RUNNO", StringType()),
+    StructField("REGIONID", StringType()),
+    StructField("PERIODID", StringType()),
+    StructField("RRP", DoubleType()),
+    StructField("EEP", DoubleType()),
+    StructField("INVALIDFLAG", StringType()),
+])
+
+# Schema for DISPATCH_UNIT_SCADA
+SCHEMA_DISPATCH_UNIT_SCADA = StructType([
+    StructField("ROW_TYPE", StringType()),
+    StructField("RECORD_TYPE1", StringType()),
+    StructField("RECORD_TYPE2", StringType()),
+    StructField("VERSION", StringType()),
+    StructField("SETTLEMENTDATE", StringType()),
+    StructField("DUID", StringType()),
+    StructField("SCADAVALUE", DoubleType()),
+])
+
+# Schema for P5MIN_REGIONSOLUTION
+SCHEMA_P5MIN_REGIONSOLUTION = StructType([
+    StructField("ROW_TYPE", StringType()),
+    StructField("RECORD_TYPE1", StringType()),
+    StructField("RECORD_TYPE2", StringType()),
+    StructField("VERSION", StringType()),
+    StructField("RUN_DATETIME", StringType()),
+    StructField("INTERVAL_DATETIME", StringType()),
+    StructField("REGIONID", StringType()),
+    StructField("RRP", DoubleType()),
+    StructField("ROP", DoubleType()),
+    StructField("EXCESSGENERATION", DoubleType()),
+    StructField("TOTALDEMAND", DoubleType()),
+])
+
+# Schema for P5MIN_INTERCONNECTORSOLN
+SCHEMA_P5MIN_INTERCONNECTORSOLN = StructType([
+    StructField("ROW_TYPE", StringType()),
+    StructField("RECORD_TYPE1", StringType()),
+    StructField("RECORD_TYPE2", StringType()),
+    StructField("VERSION", StringType()),
+    StructField("RUN_DATETIME", StringType()),
+    StructField("INTERVAL_DATETIME", StringType()),
+    StructField("INTERCONNECTORID", StringType()),
+    StructField("MWFLOW", DoubleType()),
+    StructField("MWLOSSES", DoubleType()),
+    StructField("EXPORTLIMIT", DoubleType()),
+    StructField("IMPORTLIMIT", DoubleType()),
+])
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Bronze Layer - Streaming Tables with Auto Loader
 
 # COMMAND ----------
 
 @dp.table(
     name="bronze_dispatch_regionsum",
-    comment="Raw 5-minute regional demand, generation, and interchange data from NEMWEB"
+    comment="Streaming 5-minute regional demand, generation, and interchange data from NEMWEB"
 )
 def bronze_dispatch_regionsum():
-    """
-    DISPATCHREGIONSUM - Regional summary for each 5-minute dispatch interval.
-
-    Key fields:
-      - SETTLEMENTDATE: Dispatch interval timestamp
-      - REGIONID: NEM region (NSW1, QLD1, SA1, VIC1, TAS1)
-      - TOTALDEMAND: Regional demand (MW)
-      - AVAILABLEGENERATION: Available generation capacity (MW)
-      - NETINTERCHANGE: Net flow into region (MW, negative = exporting)
-    """
+    """Auto Loader streaming from extracted CSV files."""
     return (
-        spark.read.format("nemweb_arrow")
-        .options(**get_datasource_options("DISPATCHREGIONSUM"))
-        .load()
+        spark.readStream.format("cloudFiles")
+        .option("cloudFiles.format", "csv")
+        .option("header", "true")
+        .option("quote", '"')
+        .option("cloudFiles.schemaLocation", f"{CSV_PATH}/_schemas/dispatchregionsum")
+        .schema(SCHEMA_DISPATCH_REGIONSUM)
+        .load(f"{CSV_PATH}/dispatchregionsum/")
+        .filter(col("ROW_TYPE") == "D")
+        .withColumn("settlement_date", to_timestamp(col("SETTLEMENTDATE"), "yyyy/MM/dd HH:mm:ss"))
         .withColumn("_ingested_at", current_timestamp())
-        .withColumn("_source_table", lit("DISPATCHREGIONSUM"))
+        .select(
+            "settlement_date",
+            col("REGIONID").alias("region_id"),
+            col("TOTALDEMAND").alias("total_demand_mw"),
+            col("AVAILABLEGENERATION").alias("available_generation_mw"),
+            col("NETINTERCHANGE").alias("net_interchange_mw"),
+            col("DISPATCHINTERVAL").alias("dispatch_interval"),
+            "_ingested_at"
+        )
     )
 
 # COMMAND ----------
 
 @dp.table(
     name="bronze_dispatch_price",
-    comment="Raw 5-minute regional spot prices from NEMWEB"
+    comment="Streaming 5-minute regional spot prices from NEMWEB"
 )
 def bronze_dispatch_price():
-    """
-    DISPATCHPRICE - Regional Reference Price (RRP) for each 5-minute interval.
-
-    Key fields:
-      - SETTLEMENTDATE: Dispatch interval timestamp
-      - REGIONID: NEM region
-      - RRP: Regional Reference Price ($/MWh)
-      - ROP: Regional Override Price
-      - APCFLAG: Administered Price Cap flag
-    """
+    """Auto Loader streaming from extracted CSV files."""
     return (
-        spark.read.format("nemweb_arrow")
-        .options(**get_datasource_options("DISPATCHPRICE"))
-        .load()
+        spark.readStream.format("cloudFiles")
+        .option("cloudFiles.format", "csv")
+        .option("header", "true")
+        .option("quote", '"')
+        .option("cloudFiles.schemaLocation", f"{CSV_PATH}/_schemas/dispatchprice")
+        .schema(SCHEMA_DISPATCH_PRICE)
+        .load(f"{CSV_PATH}/dispatchprice/")
+        .filter(col("ROW_TYPE") == "D")
+        .withColumn("settlement_date", to_timestamp(col("SETTLEMENTDATE"), "yyyy/MM/dd HH:mm:ss"))
         .withColumn("_ingested_at", current_timestamp())
-        .withColumn("_source_table", lit("DISPATCHPRICE"))
+        .select(
+            "settlement_date",
+            col("REGIONID").alias("region_id"),
+            col("RRP").alias("rrp"),
+            col("ROP").alias("rop"),
+            col("APCFLAG").alias("apc_flag"),
+            "_ingested_at"
+        )
     )
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Bronze Layer - Trading IS Reports (30-minute data)
 
 # COMMAND ----------
 
 @dp.table(
     name="bronze_trading_price",
-    comment="Raw 30-minute trading period prices from NEMWEB"
+    comment="Streaming 30-minute trading period prices from NEMWEB"
 )
 def bronze_trading_price():
-    """
-    TRADINGPRICE - Trading period prices (settlement prices).
-
-    Key fields:
-      - SETTLEMENTDATE: Trading period timestamp
-      - REGIONID: NEM region
-      - PERIODID: Trading period (1-48 per day)
-      - RRP: Regional Reference Price for settlement
-    """
+    """Auto Loader streaming from extracted CSV files."""
     return (
-        spark.read.format("nemweb_arrow")
-        .options(**get_datasource_options("TRADINGPRICE"))
-        .load()
+        spark.readStream.format("cloudFiles")
+        .option("cloudFiles.format", "csv")
+        .option("header", "true")
+        .option("quote", '"')
+        .option("cloudFiles.schemaLocation", f"{CSV_PATH}/_schemas/tradingprice")
+        .schema(SCHEMA_TRADING_PRICE)
+        .load(f"{CSV_PATH}/tradingprice/")
+        .filter(col("ROW_TYPE") == "D")
+        .withColumn("settlement_date", to_timestamp(col("SETTLEMENTDATE"), "yyyy/MM/dd HH:mm:ss"))
         .withColumn("_ingested_at", current_timestamp())
-        .withColumn("_source_table", lit("TRADINGPRICE"))
+        .select(
+            "settlement_date",
+            col("REGIONID").alias("region_id"),
+            col("PERIODID").alias("period_id"),
+            col("RRP").alias("rrp"),
+            "_ingested_at"
+        )
     )
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Bronze Layer - Dispatch SCADA (Real-time unit data)
 
 # COMMAND ----------
 
 @dp.table(
     name="bronze_dispatch_unit_scada",
-    comment="Raw 5-minute real-time generation per power station from NEMWEB"
+    comment="Streaming 5-minute real-time generation per power station from NEMWEB"
 )
 def bronze_dispatch_unit_scada():
-    """
-    DISPATCH_UNIT_SCADA - Real-time SCADA output for each generating unit.
-
-    Key fields:
-      - SETTLEMENTDATE: Dispatch interval timestamp
-      - DUID: Dispatchable Unit ID (power station identifier)
-      - SCADAVALUE: Real-time MW output from SCADA
-      - LASTCHANGED: When SCADA value was last updated
-    """
+    """Auto Loader streaming from extracted CSV files."""
     return (
-        spark.read.format("nemweb_arrow")
-        .options(**get_datasource_options("DISPATCH_UNIT_SCADA"))
-        .load()
+        spark.readStream.format("cloudFiles")
+        .option("cloudFiles.format", "csv")
+        .option("header", "true")
+        .option("quote", '"')
+        .option("cloudFiles.schemaLocation", f"{CSV_PATH}/_schemas/dispatch_unit_scada")
+        .schema(SCHEMA_DISPATCH_UNIT_SCADA)
+        .load(f"{CSV_PATH}/dispatch_unit_scada/")
+        .filter(col("ROW_TYPE") == "D")
+        .withColumn("settlement_date", to_timestamp(col("SETTLEMENTDATE"), "yyyy/MM/dd HH:mm:ss"))
         .withColumn("_ingested_at", current_timestamp())
-        .withColumn("_source_table", lit("DISPATCH_UNIT_SCADA"))
+        .select(
+            "settlement_date",
+            col("DUID").alias("duid"),
+            col("SCADAVALUE").alias("scada_value_mw"),
+            "_ingested_at"
+        )
     )
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Bronze Layer - P5MIN Reports (5-minute pre-dispatch forecasts)
 
 # COMMAND ----------
 
 @dp.table(
     name="bronze_p5min_regionsolution",
-    comment="Raw 5-minute pre-dispatch regional forecasts from NEMWEB"
+    comment="Streaming 5-minute pre-dispatch regional forecasts from NEMWEB"
 )
 def bronze_p5min_regionsolution():
-    """
-    P5MIN_REGIONSOLUTION - 5-minute pre-dispatch regional solution.
-
-    Contains forecasts for the next hour at 5-minute granularity.
-
-    Key fields:
-      - RUN_DATETIME: When the forecast was generated
-      - INTERVAL_DATETIME: Forecast target time
-      - REGIONID: NEM region
-      - RRP: Forecast Regional Reference Price ($/MWh)
-      - TOTALDEMAND: Forecast demand (MW)
-    """
+    """Auto Loader streaming from extracted CSV files."""
     return (
-        spark.read.format("nemweb_arrow")
-        .options(**get_datasource_options("P5MIN_REGIONSOLUTION"))
-        .load()
+        spark.readStream.format("cloudFiles")
+        .option("cloudFiles.format", "csv")
+        .option("header", "true")
+        .option("quote", '"')
+        .option("cloudFiles.schemaLocation", f"{CSV_PATH}/_schemas/p5min_regionsolution")
+        .schema(SCHEMA_P5MIN_REGIONSOLUTION)
+        .load(f"{CSV_PATH}/p5min_regionsolution/")
+        .filter(col("ROW_TYPE") == "D")
+        .withColumn("run_datetime", to_timestamp(col("RUN_DATETIME"), "yyyy/MM/dd HH:mm:ss"))
+        .withColumn("interval_datetime", to_timestamp(col("INTERVAL_DATETIME"), "yyyy/MM/dd HH:mm:ss"))
         .withColumn("_ingested_at", current_timestamp())
-        .withColumn("_source_table", lit("P5MIN_REGIONSOLUTION"))
+        .select(
+            "run_datetime",
+            "interval_datetime",
+            col("REGIONID").alias("region_id"),
+            col("RRP").alias("rrp"),
+            col("TOTALDEMAND").alias("total_demand_mw"),
+            "_ingested_at"
+        )
     )
 
 # COMMAND ----------
 
 @dp.table(
     name="bronze_p5min_interconnectorsoln",
-    comment="Raw 5-minute pre-dispatch interconnector forecasts from NEMWEB"
+    comment="Streaming 5-minute pre-dispatch interconnector forecasts from NEMWEB"
 )
 def bronze_p5min_interconnectorsoln():
-    """
-    P5MIN_INTERCONNECTORSOLN - 5-minute pre-dispatch interconnector solution.
-
-    Key fields:
-      - RUN_DATETIME: When the forecast was generated
-      - INTERVAL_DATETIME: Forecast target time
-      - INTERCONNECTORID: Interconnector identifier (e.g., NSW1-QLD1)
-      - MWFLOW: Forecast MW flow
-      - EXPORTLIMIT: Export limit (MW)
-      - IMPORTLIMIT: Import limit (MW)
-    """
+    """Auto Loader streaming from extracted CSV files."""
     return (
-        spark.read.format("nemweb_arrow")
-        .options(**get_datasource_options("P5MIN_INTERCONNECTORSOLN"))
-        .load()
+        spark.readStream.format("cloudFiles")
+        .option("cloudFiles.format", "csv")
+        .option("header", "true")
+        .option("quote", '"')
+        .option("cloudFiles.schemaLocation", f"{CSV_PATH}/_schemas/p5min_interconnectorsoln")
+        .schema(SCHEMA_P5MIN_INTERCONNECTORSOLN)
+        .load(f"{CSV_PATH}/p5min_interconnectorsoln/")
+        .filter(col("ROW_TYPE") == "D")
+        .withColumn("run_datetime", to_timestamp(col("RUN_DATETIME"), "yyyy/MM/dd HH:mm:ss"))
+        .withColumn("interval_datetime", to_timestamp(col("INTERVAL_DATETIME"), "yyyy/MM/dd HH:mm:ss"))
         .withColumn("_ingested_at", current_timestamp())
-        .withColumn("_source_table", lit("P5MIN_INTERCONNECTORSOLN"))
+        .select(
+            "run_datetime",
+            "interval_datetime",
+            col("INTERCONNECTORID").alias("interconnector_id"),
+            col("MWFLOW").alias("mw_flow"),
+            col("EXPORTLIMIT").alias("export_limit_mw"),
+            col("IMPORTLIMIT").alias("import_limit_mw"),
+            "_ingested_at"
+        )
     )
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Bronze Layer - Bidmove Complete (Generator bids)
-
-# COMMAND ----------
-
-@dp.table(
-    name="bronze_bidperoffer",
-    comment="Raw generator bid availability per trading period from NEMWEB"
-)
-def bronze_bidperoffer():
-    """
-    BIDPEROFFER_D - Generator bid availability per trading period.
-
-    Contains the MW availability in each of 10 price bands for each
-    trading period (48 per day).
-
-    Key fields:
-      - DUID: Dispatchable Unit ID
-      - BIDTYPE: Bid type (ENERGY, RAISE6SEC, etc.)
-      - PERIODID: Trading period (1-48)
-      - MAXAVAIL: Maximum availability (MW)
-      - BANDAVAIL1-10: Availability in each price band (MW)
-      - ROCUP/ROCDOWN: Ramp rates (MW/min)
-    """
-    return (
-        spark.read.format("nemweb_arrow")
-        .options(**get_datasource_options("BIDPEROFFER_D"))
-        .load()
-        .withColumn("_ingested_at", current_timestamp())
-        .withColumn("_source_table", lit("BIDPEROFFER_D"))
-    )
-
-# COMMAND ----------
-
-@dp.table(
-    name="bronze_biddayoffer",
-    comment="Raw generator daily price bands from NEMWEB"
-)
-def bronze_biddayoffer():
-    """
-    BIDDAYOFFER_D - Generator daily offer with price bands.
-
-    Contains the $/MWh price for each of 10 bands, valid for the entire
-    trading day.
-
-    Key fields:
-      - DUID: Dispatchable Unit ID
-      - BIDTYPE: Bid type (ENERGY, RAISE6SEC, etc.)
-      - PARTICIPANTID: Registered participant
-      - PRICEBAND1-10: Price for each band ($/MWh)
-      - REBIDEXPLANATION: Reason for rebid (if applicable)
-    """
-    return (
-        spark.read.format("nemweb_arrow")
-        .options(**get_datasource_options("BIDDAYOFFER_D"))
-        .load()
-        .withColumn("_ingested_at", current_timestamp())
-        .withColumn("_source_table", lit("BIDDAYOFFER_D"))
-    )
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Silver Layer - Joined and Cleansed Data
+# MAGIC ## Silver Layer - Streaming Tables with Joins
 
 # COMMAND ----------
 
 @dp.table(
     name="silver_dispatch_with_price",
-    comment="Joined dispatch and price data"
+    comment="Joined dispatch and price data from streaming bronze tables"
 )
 def silver_dispatch_with_price():
-    """
-    Join regional dispatch summary with prices for analysis.
-    """
-    dispatch = spark.read.table("bronze_dispatch_regionsum")
-    price = spark.read.table("bronze_dispatch_price")
+    """Join regional dispatch summary with prices."""
+    dispatch = spark.readStream.table("bronze_dispatch_regionsum")
+    price = spark.readStream.table("bronze_dispatch_price")
 
     return (
         dispatch.alias("d")
         .join(
             price.alias("p"),
-            (col("d.SETTLEMENTDATE") == col("p.SETTLEMENTDATE")) &
-            (col("d.REGIONID") == col("p.REGIONID")),
+            (col("d.settlement_date") == col("p.settlement_date")) &
+            (col("d.region_id") == col("p.region_id")),
             "inner"
         )
         .select(
-            col("d.SETTLEMENTDATE").alias("settlement_date"),
-            col("d.REGIONID").alias("region_id"),
-            col("d.TOTALDEMAND").alias("total_demand_mw"),
-            col("d.AVAILABLEGENERATION").alias("available_generation_mw"),
-            col("d.NETINTERCHANGE").alias("net_interchange_mw"),
-            col("p.RRP").alias("rrp"),
-            col("p.ROP").alias("rop"),
+            col("d.settlement_date"),
+            col("d.region_id"),
+            col("d.total_demand_mw"),
+            col("d.available_generation_mw"),
+            col("d.net_interchange_mw"),
+            col("p.rrp"),
+            col("p.rop"),
             current_timestamp().alias("_processed_at")
         )
     )
@@ -332,27 +373,25 @@ def silver_dispatch_with_price():
 
 @dp.table(
     name="silver_unit_generation",
-    comment="Unit generation with positive values only"
+    comment="Unit generation streaming table with positive values only"
 )
 @dp.expect_or_drop("positive_generation", "scada_value_mw >= 0")
 def silver_unit_generation():
-    """
-    Cleansed unit generation data.
-    """
+    """Cleansed unit generation data from streaming bronze."""
     return (
-        spark.read.table("bronze_dispatch_unit_scada")
+        spark.readStream.table("bronze_dispatch_unit_scada")
         .select(
-            col("SETTLEMENTDATE").alias("settlement_date"),
-            col("DUID").alias("duid"),
-            col("SCADAVALUE").alias("scada_value_mw"),
-            col("_ingested_at")
+            "settlement_date",
+            "duid",
+            "scada_value_mw",
+            "_ingested_at"
         )
     )
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Gold Layer - Business Aggregations
+# MAGIC ## Gold Layer - Materialized Views for Aggregations
 
 # COMMAND ----------
 
@@ -361,9 +400,7 @@ def silver_unit_generation():
     comment="Hourly generation totals per unit"
 )
 def gold_hourly_generation_by_unit():
-    """
-    Aggregate unit generation by hour.
-    """
+    """Aggregate unit generation by hour."""
     from pyspark.sql.functions import sum as _sum, avg, max as _max, date_trunc
 
     return (
@@ -373,6 +410,28 @@ def gold_hourly_generation_by_unit():
         .agg(
             avg("scada_value_mw").alias("avg_generation_mw"),
             _max("scada_value_mw").alias("max_generation_mw"),
-            _sum("scada_value_mw").alias("total_mwh")  # Approx MWh (5-min intervals)
+            _sum("scada_value_mw").alias("total_mwh")
+        )
+    )
+
+# COMMAND ----------
+
+@dp.materialized_view(
+    name="gold_regional_price_summary",
+    comment="Regional price statistics by hour"
+)
+def gold_regional_price_summary():
+    """Aggregate regional prices by hour."""
+    from pyspark.sql.functions import min as _min, max as _max, avg, date_trunc
+
+    return (
+        spark.read.table("silver_dispatch_with_price")
+        .withColumn("hour", date_trunc("hour", col("settlement_date")))
+        .groupBy("region_id", "hour")
+        .agg(
+            avg("rrp").alias("avg_rrp"),
+            _min("rrp").alias("min_rrp"),
+            _max("rrp").alias("max_rrp"),
+            avg("total_demand_mw").alias("avg_demand_mw")
         )
     )

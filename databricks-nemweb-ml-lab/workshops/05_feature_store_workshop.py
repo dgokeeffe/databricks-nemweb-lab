@@ -46,7 +46,7 @@
 # COMMAND ----------
 
 # Configuration - uses widget parameters from bundle job, with defaults for interactive use
-dbutils.widgets.text("catalog", "workspace", "Catalog")
+dbutils.widgets.text("catalog", "daveok", "Catalog")
 dbutils.widgets.text("schema", "ml_workshops", "Schema")
 CATALOG = dbutils.widgets.get("catalog")
 SCHEMA = dbutils.widgets.get("schema")
@@ -480,6 +480,10 @@ from sklearn.pipeline import Pipeline as SKPipeline
 mlflow.set_registry_uri("databricks-uc")
 experiment_name = f"/Users/{spark.sql('SELECT current_user()').first()[0]}/feature_store_workshop"
 mlflow.set_experiment(experiment_name)
+
+# Drop _processed_at if present to avoid Arrow conversion error in toPandas()
+if "_processed_at" in training_df.columns:
+    training_df = training_df.drop("_processed_at")
 
 # Convert to pandas
 pdf = training_df.toPandas()

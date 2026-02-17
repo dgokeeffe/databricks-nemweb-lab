@@ -1,0 +1,13 @@
+# Workspace base environment: Serverless environment version 4 (SVLS 4)
+# Use this for consistency with bundle-deployed jobs and pipelines.
+#
+# Add to workspace: Settings > Workspace admin > Compute >
+# Base environments for serverless compute > Manage > Create new environment
+# Select this file (upload to Workspace or a UC volume first).
+#
+# See: https://learn.microsoft.com/en-gb/azure/databricks/admin/workspace-settings/base-environment
+environment_version: "4"
+dependencies:
+  - xgboost
+  - lightgbm
+  - prophet

@@ -1,5 +1,5 @@
 """
-NEMWEB Custom PySpark Data Source - Arrow Version
+NEMWEB Custom PySpark Data Source - Arrow Version - TO BE DEPRECATED
 
 This module implements a custom data source using PyArrow RecordBatch
 for zero-copy transfer to Spark. This avoids Python datetime serialization
@@ -724,6 +724,10 @@ class NemwebArrowReader(DataSourceReader):
 
         Routes to appropriate reader based on partition type.
         """
+        if partition is None:
+            raise ValueError("Partition is None - this indicates no data files were found. "
+                            "Check that the volume path exists and files were downloaded successfully.")
+
         if partition.file_path:
             yield from self._read_volume_file(partition)
         else:

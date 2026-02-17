@@ -4,11 +4,14 @@ A Dash application for NEM price analytics, deployed as a Databricks App.
 
 ## Features
 
-- Real-time data from `curated_nem_prices` view
+- AGL-themed Dash UI for analyst personas
+- Pipeline-first reads from `gold_price_hourly` + `gold_demand_hourly`
+- Automatic fallback to `curated_nem_prices` for backward compatibility
 - Regional KPI cards (avg price, max, volatility)
 - Daily price trend chart
 - Price volatility comparison
 - Peak vs off-peak analysis
+- Footer source indicator showing active table path
 
 ## Deployment
 
@@ -43,10 +46,10 @@ https://nem-analytics-<workspace-id>.cloud.databricks.com
 
 ```bash
 # Install dependencies
-pip install -r requirements.txt
+uv pip install -r requirements.txt
 
 # Run locally (uses sample data)
-python app.py
+uv run python app.py
 
 # Open http://localhost:8050
 ```
@@ -60,17 +63,23 @@ Set by Databricks Apps automatically:
 | `DATABRICKS_WAREHOUSE_ID` | SQL Warehouse ID |
 | `DATABRICKS_HOST` | Workspace hostname |
 | `DATABRICKS_TOKEN` | Authentication token |
+| `NEMWEB_CATALOG` | Unity Catalog name (default: `workspace`) |
+| `NEMWEB_SCHEMA` | Schema name (default: `ml_workshops`) |
 
 ## Data Source
 
-The app queries:
+Primary query path:
 ```
-workspace.nemweb_lab.curated_nem_prices
+workspace.ml_workshops.gold_price_hourly
+workspace.ml_workshops.gold_demand_hourly
 ```
 
-This view joins:
-- `nemweb_dispatch_prices` (RRP)
-- `nemweb_dispatch_regionsum` (demand)
+Fallback query path:
+```
+workspace.ml_workshops.curated_nem_prices
+```
+
+If neither is available, the app uses generated sample data for local/demo mode.
 
 ## Customization
 

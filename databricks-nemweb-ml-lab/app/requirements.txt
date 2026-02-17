@@ -1,0 +1,8 @@
+dash>=2.14.0
+dash-ag-grid>=31.0.0
+plotly>=5.18.0
+pandas>=2.0.0
+numpy>=1.24.0
+gunicorn>=21.0.0
+databricks-sql-connector>=3.0.0
+databricks-sdk>=0.57.0

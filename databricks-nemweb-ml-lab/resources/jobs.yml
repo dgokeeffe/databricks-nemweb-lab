@@ -1,0 +1,188 @@
+# Job definitions for the NEMWEB ML Lab.
+# Includes: data setup, pipeline refresh, workshops, and E2E demo.
+
+resources:
+  jobs:
+    # -- Data Setup --
+    ml_workshop_data_setup:
+      name: "${var.project_name} - ML Workshop Data Setup [${var.environment}]"
+      tasks:
+        - task_key: setup_schema_and_data
+          environment_key: serverless_with_wheel
+          notebook_task:
+            notebook_path: ../workshops/00_data_setup.py
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+              days_history: "30"
+        - task_key: run_ml_pipeline
+          depends_on:
+            - task_key: setup_schema_and_data
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.nemweb_ml_pipeline.id}
+            full_refresh: true
+      environments:
+        - environment_key: serverless_with_wheel
+          spec:
+            environment_version: "4"
+            dependencies:
+              - ${workspace.root_path}/artifacts/.internal/nemweb_datasource-2.12.1-py3-none-any.whl
+
+    # -- Pipeline Refresh Jobs --
+    nemweb_ml_pipeline_job:
+      name: "${var.project_name} - ML Pipeline Refresh [${var.environment}]"
+      tasks:
+        - task_key: refresh_ml_pipeline
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.nemweb_ml_pipeline.id}
+
+    streaming_pipeline_job:
+      name: "${var.project_name} - Streaming Pipeline Refresh [${var.environment}]"
+      tasks:
+        - task_key: refresh_streaming_pipeline
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.nemweb_streaming_pipeline.id}
+
+    prediction_pipeline_job:
+      name: "${var.project_name} - Prediction Pipeline Refresh [${var.environment}]"
+      tasks:
+        - task_key: refresh_predictions
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.nemweb_prediction_pipeline.id}
+
+    # -- Workshop Jobs --
+    ml_workshop:
+      name: "${var.project_name} - ML Workshop [${var.environment}]"
+      tasks:
+        - task_key: run_workshop
+          environment_key: serverless_ml_v2
+          notebook_task:
+            notebook_path: ../workshops/01_ml_workshop.py
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+      environments:
+        - environment_key: serverless_ml_v2
+          spec:
+            environment_version: "4"
+            dependencies:
+              - ${workspace.root_path}/artifacts/.internal/nemweb_datasource-2.12.1-py3-none-any.whl
+              - scikit-learn
+              - xgboost
+              - lightgbm
+
+    load_forecast_workshop:
+      name: "${var.project_name} - Load Forecast Workshop [${var.environment}]"
+      tasks:
+        - task_key: run_workshop
+          environment_key: serverless_ml_v2
+          notebook_task:
+            notebook_path: ../workshops/02_load_forecast_workshop.py
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+              history_days: "90"
+              experiment_path: "/Shared/${var.project_name}/${var.environment}/load_forecast_workshop"
+      environments:
+        - environment_key: serverless_ml_v2
+          spec:
+            environment_version: "4"
+            dependencies:
+              - ${workspace.root_path}/artifacts/.internal/nemweb_datasource-2.12.1-py3-none-any.whl
+              - scikit-learn
+              - xgboost
+
+    market_modelling_workshop:
+      name: "${var.project_name} - Market Modelling Workshop [${var.environment}]"
+      tasks:
+        - task_key: run_workshop
+          environment_key: serverless_ml_v2
+          notebook_task:
+            notebook_path: ../workshops/03_market_modelling_workshop.py
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+              history_days: "90"
+              experiment_path: "/Shared/${var.project_name}/${var.environment}/market_modelling_workshop"
+      environments:
+        - environment_key: serverless_ml_v2
+          spec:
+            environment_version: "4"
+            dependencies:
+              - ${workspace.root_path}/artifacts/.internal/nemweb_datasource-2.12.1-py3-none-any.whl
+              - scikit-learn
+              - xgboost
+
+    feature_store_workshop:
+      name: "${var.project_name} - Feature Store Workshop [${var.environment}]"
+      tasks:
+        - task_key: run_workshop
+          environment_key: serverless_fs
+          notebook_task:
+            notebook_path: ../workshops/05_feature_store_workshop.py
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+      environments:
+        - environment_key: serverless_fs
+          spec:
+            environment_version: "4"
+            dependencies:
+              - ${workspace.root_path}/artifacts/.internal/nemweb_datasource-2.12.1-py3-none-any.whl
+              - databricks-feature-engineering>=0.14.0
+              - xgboost
+
+    # -- Appendix: Foundation Model --
+    chronos_foundation_model:
+      name: "${var.project_name} - Chronos Foundation Model [${var.environment}]"
+      tasks:
+        - task_key: run_workshop
+          environment_key: serverless_chronos
+          notebook_task:
+            notebook_path: ../workshops/06_chronos_foundation_model.py
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+      environments:
+        - environment_key: serverless_chronos
+          spec:
+            environment_version: "4"
+            dependencies:
+              - chronos-forecasting
+
+    # -- E2E Demo --
+    e2e_demo:
+      name: "${var.project_name} - E2E Demo [${var.environment}]"
+      tasks:
+        - task_key: train_load_forecast
+          environment_key: serverless_ml_v2
+          notebook_task:
+            notebook_path: ../workshops/02_load_forecast_workshop.py
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+              history_days: "90"
+              experiment_path: "/Shared/${var.project_name}/${var.environment}/e2e_load_forecast"
+        - task_key: train_price_forecast
+          environment_key: serverless_ml_v2
+          notebook_task:
+            notebook_path: ../workshops/03_market_modelling_workshop.py
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+              history_days: "90"
+              experiment_path: "/Shared/${var.project_name}/${var.environment}/e2e_market_modelling"
+        - task_key: refresh_predictions
+          depends_on:
+            - task_key: train_load_forecast
+            - task_key: train_price_forecast
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.nemweb_prediction_pipeline.id}
+      environments:
+        - environment_key: serverless_ml_v2
+          spec:
+            environment_version: "4"
+            dependencies:
+              - ${workspace.root_path}/artifacts/.internal/nemweb_datasource-2.12.1-py3-none-any.whl
+              - scikit-learn
+              - xgboost

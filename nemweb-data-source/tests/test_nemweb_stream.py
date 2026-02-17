@@ -11,7 +11,7 @@ Tests the unified data source components including:
 
 import pytest
 from unittest.mock import patch, MagicMock
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import io
 import zipfile
 
@@ -304,6 +304,35 @@ class TestNemwebStreamReader:
         assert "last_file" in offset
         assert offset["last_file"].startswith("PUBLIC_DISPATCHIS_")
 
+    def test_initial_offset_default_catchup_window(self):
+        """Test default startup catch-up window is 24 hours."""
+        from pyspark.sql.types import StructType
+
+        stream_reader = NemwebStreamReader(StructType([]), {"table": "DISPATCHREGIONSUM"})
+        offset = stream_reader.initialOffset()["last_file"]
+        cutoff_str = offset.split("_")[2]
+        cutoff_dt = datetime.strptime(cutoff_str, "%Y%m%d%H%M")
+
+        now_aest = datetime.now(timezone(timedelta(hours=10))).replace(tzinfo=None)
+        delta = now_aest - cutoff_dt
+        assert timedelta(hours=23, minutes=55) <= delta <= timedelta(hours=24, minutes=5)
+
+    def test_initial_offset_custom_catchup_window(self):
+        """Test configurable startup catch-up window."""
+        from pyspark.sql.types import StructType
+
+        stream_reader = NemwebStreamReader(
+            StructType([]),
+            {"table": "DISPATCHREGIONSUM", "startup_catchup_hours": "6"},
+        )
+        offset = stream_reader.initialOffset()["last_file"]
+        cutoff_str = offset.split("_")[2]
+        cutoff_dt = datetime.strptime(cutoff_str, "%Y%m%d%H%M")
+
+        now_aest = datetime.now(timezone(timedelta(hours=10))).replace(tzinfo=None)
+        delta = now_aest - cutoff_dt
+        assert timedelta(hours=5, minutes=55) <= delta <= timedelta(hours=6, minutes=5)
+
     def test_initial_offset_custom(self):
         """Test custom start_from offset."""
         from pyspark.sql.types import StructType
@@ -336,6 +365,67 @@ class TestNemwebStreamReader:
         offset = reader.latestOffset()
 
         assert offset["last_file"] == ""
+
+    @patch.object(NemwebStreamReader, '_list_current_files')
+    def test_latest_offset_respects_max_files_per_batch(self, mock_list):
+        """latestOffset should advance by at most max_files_per_batch files."""
+        from pyspark.sql.types import StructType
+
+        stream_reader = NemwebStreamReader(
+            StructType([]),
+            {
+                "table": "DISPATCHREGIONSUM",
+                "start_from": "PUBLIC_DISPATCHIS_202401011200_0000000001.zip",
+                "max_files_per_batch": "2",
+            },
+        )
+        mock_list.return_value = [
+            "PUBLIC_DISPATCHIS_202401011200_0000000001.zip",
+            "PUBLIC_DISPATCHIS_202401011205_0000000002.zip",
+            "PUBLIC_DISPATCHIS_202401011210_0000000003.zip",
+            "PUBLIC_DISPATCHIS_202401011215_0000000004.zip",
+            "PUBLIC_DISPATCHIS_202401011220_0000000005.zip",
+        ]
+
+        first = stream_reader.latestOffset()
+        assert first["last_file"] == "PUBLIC_DISPATCHIS_202401011210_0000000003.zip"
+
+        stream_reader.commit(first)
+        second = stream_reader.latestOffset()
+        assert second["last_file"] == "PUBLIC_DISPATCHIS_202401011220_0000000005.zip"
+
+    @patch.object(NemwebStreamReader, '_list_current_files')
+    def test_partitions_after_commit_no_gap(self, mock_list):
+        """After commit, next partition should continue from committed file."""
+        from pyspark.sql.types import StructType
+
+        stream_reader = NemwebStreamReader(
+            StructType([]),
+            {
+                "table": "DISPATCHREGIONSUM",
+                "start_from": "PUBLIC_DISPATCHIS_202401011200_0000000001.zip",
+                "max_files_per_batch": "2",
+            },
+        )
+        mock_list.return_value = [
+            "PUBLIC_DISPATCHIS_202401011200_0000000001.zip",
+            "PUBLIC_DISPATCHIS_202401011205_0000000002.zip",
+            "PUBLIC_DISPATCHIS_202401011210_0000000003.zip",
+            "PUBLIC_DISPATCHIS_202401011215_0000000004.zip",
+            "PUBLIC_DISPATCHIS_202401011220_0000000005.zip",
+        ]
+
+        first_end = stream_reader.latestOffset()
+        stream_reader.commit(first_end)
+        second_end = stream_reader.latestOffset()
+
+        partitions = stream_reader.partitions(first_end, second_end)
+        assert len(partitions) == 1
+        filenames = [name for name, _ in partitions[0].files]
+        assert filenames == [
+            "PUBLIC_DISPATCHIS_202401011215_0000000004.zip",
+            "PUBLIC_DISPATCHIS_202401011220_0000000005.zip",
+        ]
 
     @patch.object(NemwebStreamReader, '_list_current_files')
     def test_partitions(self, mock_list, reader):

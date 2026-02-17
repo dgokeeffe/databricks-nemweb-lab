@@ -30,7 +30,7 @@ from pyspark.sql.types import DoubleType, StringType, TimestampType
 logger = logging.getLogger(__name__)
 
 # Version for debugging - increment when making changes
-__version__ = "2.11.0"
+__version__ = "2.12.0"
 
 
 def get_version() -> str:
@@ -101,7 +101,21 @@ TABLE_CONFIG = {
     "ROOFTOP_PV_ACTUAL": {
         "folder": "ROOFTOP_PV/ACTUAL",
         "file_prefix": "ROOFTOP_PV_ACTUAL",
-        "record_type": None  # Uses standard CSV format
+        # CURRENT files are named PUBLIC_ROOFTOP_PV_ACTUAL_SATELLITE_YYYYMMDDHHmmss_SEQ.zip
+        # which differs from the archive prefix. streaming_prefix is used by
+        # NemwebStreamReader for CURRENT directory listing.
+        "streaming_prefix": "ROOFTOP_PV_ACTUAL_SATELLITE",
+        # Rooftop PV files use MMS multi-record rows:
+        # I,ROOFTOP,ACTUAL,... and D,ROOFTOP,ACTUAL,...
+        "record_type": "ROOFTOP,ACTUAL"
+    },
+    # P5MIN - AEMO's 5-minute pre-dispatch (published every 5 min in P5_Reports)
+    # Contains forecasts for the next ~12 dispatch intervals (1 hour ahead)
+    # File naming: PUBLIC_P5MIN_YYYYMMDDHHMM_YYYYMMDDHHmmss.zip
+    "P5MIN_REGIONSOLUTION": {
+        "folder": "P5_Reports",
+        "file_prefix": "P5MIN",
+        "record_type": "P5MIN,REGIONSOLUTION"
     },
     # Dispatch_Reports - comprehensive dispatch data with prices, FCAS, interconnectors
     # File naming: PUBLIC_DISPATCH_YYYYMMDDHHMM_YYYYMMDDHHmmss_LEGACY.zip
@@ -197,13 +211,33 @@ SCHEMAS = {
         ],
     },
     "ROOFTOP_PV_ACTUAL": {
-        "record_type": None,  # Standard CSV format, not multi-record
+        "record_type": "ROOFTOP,ACTUAL",
         "fields": [
             ("INTERVAL_DATETIME", TimestampType()),
             ("REGIONID", StringType()),
             ("POWER", DoubleType()),
             ("QI", DoubleType()),
             ("TYPE", StringType()),
+            ("LASTCHANGED", TimestampType()),
+        ],
+    },
+    "P5MIN_REGIONSOLUTION": {
+        "record_type": "P5MIN,REGIONSOLUTION",
+        "fields": [
+            ("RUN_DATETIME", TimestampType()),
+            ("INTERVENTION", StringType()),
+            ("INTERVAL_DATETIME", TimestampType()),
+            ("REGIONID", StringType()),
+            ("RRP", DoubleType()),
+            ("ROP", DoubleType()),
+            ("EXCESSGENERATION", DoubleType()),
+            ("TOTALDEMAND", DoubleType()),
+            ("AVAILABLEGENERATION", DoubleType()),
+            ("AVAILABLELOAD", DoubleType()),
+            ("DEMANDFORECAST", DoubleType()),
+            ("DISPATCHABLEGENERATION", DoubleType()),
+            ("DISPATCHABLELOAD", DoubleType()),
+            ("NETINTERCHANGE", DoubleType()),
             ("LASTCHANGED", TimestampType()),
         ],
     },
@@ -360,10 +394,14 @@ def list_current_files(folder: str, file_prefix: str, file_suffix: str = "") -> 
         logger.error(f"Failed to list CURRENT directory {url}: {e}")
         return []
 
+    # Timestamp length varies by table:
+    #   DispatchIS/P5MIN: 12 digits (YYYYMMDDHHMM)
+    #   ROOFTOP_PV_ACTUAL_SATELLITE: 14 digits (YYYYMMDDHHmmss)
+    # Use \d+ for both groups to handle all naming conventions.
     if file_suffix:
-        pattern = rf'(PUBLIC_{file_prefix}_\d{{12}}_\d{{14}}{file_suffix}\.zip)'
+        pattern = rf'(PUBLIC_{file_prefix}_\d+_\d+{file_suffix}\.zip)'
     else:
-        pattern = rf'(PUBLIC_{file_prefix}_\d{{12}}_\d+\.zip)'
+        pattern = rf'(PUBLIC_{file_prefix}_\d+_\d+\.zip)'
 
     matches = re.findall(pattern, html, re.IGNORECASE)
     return sorted(set(matches))

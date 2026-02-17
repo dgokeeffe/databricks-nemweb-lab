@@ -13,6 +13,10 @@ env:
     valueFrom: resources.workspace.host
   - name: DATABRICKS_TOKEN
     valueFrom: resources.credentials.token
+  - name: NEMWEB_CATALOG
+    value: "workspace"
+  - name: NEMWEB_SCHEMA
+    value: "ml_workshops"
 
 resources:
   sql_warehouse:

@@ -9,10 +9,10 @@ Three main components plus workshops:
 1. **nemweb-data-source/** - Custom PySpark Data Source for AEMO NEMWEB data (packaged as wheel)
 2. **nemweb-standalone/** - Pure Python utility for fetching NEMWEB data (no Spark required, stdlib only)
 3. **databricks-nemweb-lab/** - 40-minute hands-on lab for data engineers (exercises, solutions, pipelines)
-4. **databricks-nemweb-lab/workshops/** - 4-module ML workshop series for Load Forecasting and Market Modelling teams
+4. **databricks-nemweb-ml-lab/** - ML workshop series (Load Forecasting & Market Modelling) with Lakeflow Python project structure
 5. **databricks-nemweb-analyst-lab/** - 60-minute demo-only workshop for trading analytics teams (Genie, AI/BI, Power BI)
 
-Bundle config (`databricks.yml`) lives at repository root.
+Bundle config (`databricks.yml`) lives at repository root, plus `databricks-nemweb-ml-lab/databricks.yml` for the ML lab.
 
 ## Common Commands
 
@@ -27,14 +27,23 @@ uv run python -m pytest tests/test_nemweb_utils.py -v          # single file
 # Run standalone utility tests
 cd nemweb-standalone && uv run python -m pytest test_nemweb.py -v
 
-# Databricks Asset Bundles
+# Databricks Asset Bundles (direct deployment engine - no Terraform)
 databricks bundle validate --var="environment=dev"
 databricks bundle deploy --var="environment=dev"
+databricks bundle plan --target dev --var="environment=dev"   # Preview changes (direct engine)
 databricks bundle run nemweb_lab_workflow --target dev --var="environment=dev"
 databricks bundle run nemweb_lab_solutions --target dev --var="environment=dev"  # instructor
 databricks bundle run ml_workshops --target dev --var="environment=dev"          # ML workshop series
 databricks bundle run workshop_data_setup --target dev --var="environment=dev"   # Load NEMWEB data for ML workshops
 databricks bundle destroy --target dev --var="environment=dev"
+
+# ML lab only (databricks-nemweb-ml-lab) - deploy from that directory:
+#   cd databricks-nemweb-ml-lab
+#   databricks bundle deploy --var="environment=dev" --profile daveok
+#   databricks bundle run streaming_pipeline_job --target dev --var="environment=dev" --profile daveok
+#   databricks bundle run load_forecast_workshop --target dev --var="environment=dev" --profile daveok
+#   databricks bundle run market_modelling_workshop --target dev --var="environment=dev" --profile daveok
+#   databricks bundle run chronos_foundation_model --target dev --var="environment=dev" --profile daveok
 
 # Dashboard app (local development)
 cd databricks-nemweb-lab/app && gunicorn app:server -b 0.0.0.0:8050 --workers 2
@@ -72,9 +81,63 @@ NEMWEB API (HTTP/ZIP/CSV) → Custom Datasource → Lakeflow Pipeline (Bronze/Si
 - `databricks-nemweb-lab/pipelines/` - Lakeflow pipeline definitions
 - `databricks-nemweb-lab/exercises/` - Lab exercises (00-04)
 - `databricks-nemweb-lab/solutions/` - Reference solutions (instructors)
-- `databricks-nemweb-lab/workshops/` - ML workshop modules (00-04: data setup, platform, MLflow, serving, GenAI)
 - `databricks-nemweb-lab/app/` - Databricks App dashboard
 - `databricks-nemweb-lab/artifacts/` - Built wheel copied here for bundle deployment
+
+### ML Lab Directory (Lakeflow Pipelines Python Project)
+
+Follows the [bundle-examples/lakeflow_pipelines_python](https://github.com/databricks/bundle-examples/tree/main/lakeflow_pipelines_python) pattern:
+
+```
+databricks-nemweb-ml-lab/
+├── databricks.yml                     # Top-level bundle config (includes resources/)
+├── pyproject.toml                     # Python package definition
+├── resources/
+│   ├── streaming_pipeline.pipeline.yml  # Live NEMWEB streaming (14 tables)
+│   ├── ml_pipeline.pipeline.yml         # Auto Loader ML feature tables
+│   ├── prediction_pipeline.pipeline.yml # Champion model scoring
+│   └── jobs.yml                         # All job definitions
+├── src/
+│   ├── streaming_pipeline/
+│   │   ├── register_datasource.py       # Custom data source registration
+│   │   └── transformations/             # 14 individual .py files (1 per table)
+│   │       ├── bronze_dispatch.py       # DISPATCHREGIONSUM
+│   │       ├── bronze_price.py          # DISPATCHPRICE
+│   │       ├── bronze_p5min.py          # P5MIN_REGIONSOLUTION
+│   │       ├── bronze_scada.py          # DISPATCH_UNIT_SCADA
+│   │       ├── bronze_interconnector.py # DISPATCH_INTERCONNECTOR
+│   │       ├── bronze_rooftop_pv.py     # ROOFTOP_PV_ACTUAL
+│   │       ├── bronze_weather.py        # BOM weather observations
+│   │       ├── silver_demand_weather.py # Stream-stream join (dispatch + price)
+│   │       ├── silver_forecast_vs_actual.py  # P5MIN vs actual accuracy
+│   │       ├── silver_supply_stack.py   # NEM-wide SCADA aggregation
+│   │       ├── gold_demand_hourly.py    # Hourly demand + weather
+│   │       ├── gold_price_hourly.py     # Hourly price volatility
+│   │       ├── gold_forecast_accuracy.py # AEMO forecast MAPE/bias
+│   │       └── gold_interconnector_hourly.py # Interconnector utilisation
+│   ├── ml_pipeline/
+│   │   └── transformations/
+│   │       └── nemweb_ml_pipeline.py    # Auto Loader bronze/silver/gold
+│   └── prediction_pipeline/
+│       └── transformations/
+│           ├── nemweb_prediction_pipeline.py  # Champion model scoring
+│           └── ml_features.py           # Shared feature engineering
+├── workshops/                           # Interactive Databricks notebooks
+│   ├── 00_data_setup.py
+│   ├── 01_ml_workshop.py
+│   ├── 02_load_forecast_workshop.py
+│   ├── 03_market_modelling_workshop.py
+│   ├── 05_feature_store_workshop.py
+│   └── 06_chronos_foundation_model.py
+└── app/                                 # Dash dashboard
+```
+
+Key design decisions:
+- **Raw .py files** in `src/`, not Databricks notebooks (no `# MAGIC` or `# COMMAND`)
+- **Glob-based library inclusion** (`transformations/**`) instead of explicit notebook paths
+- **One file per table** in the streaming pipeline for clean separation of concerns
+- **Resources split** into separate YAML files via `include: resources/*.yml`
+- **Workshops stay as Databricks notebooks** (designed for interactive use)
 
 ## NEMWEB Data Source
 
@@ -121,8 +184,9 @@ Four-module series for Load Forecasting and Market Modelling teams:
 | 02 | `workshops/02_ml_workflows_mlflow.py` | MLflow tracking, experiments, model registry |
 | 03 | `workshops/03_serving_and_monitoring.py` | Model serving endpoints, monitoring |
 | 04 | `workshops/04_advanced_ml_genai.py` | Feature Store, AutoML, GenAI integration |
+| 06 | `workshops/06_chronos_foundation_model.py` | **Appendix** - Amazon Chronos-Bolt & Chronos-2 zero-shot time series forecasting vs XGBoost |
 
-Workshops use `ml_workshops` schema and require the `nemweb_datasource` wheel plus ML libraries (xgboost, lightgbm, prophet).
+Workshops use `ml_workshops` schema and require the `nemweb_datasource` wheel plus ML libraries (xgboost, lightgbm, prophet). Workshop 06 (appendix) additionally requires `chronos-forecasting` (installs PyTorch + Transformers).
 
 ## Development Guidelines
 
@@ -174,6 +238,17 @@ df = fetch("DISPATCHPRICE", hours=1, as_pandas=True)  # Returns DataFrame
 ### Local Development
 - `nemweb_local.py` with DuckDB for quick iteration (no Spark required)
 - Full DataSource API testing requires Databricks Serverless or DBR 15.4+ cluster
+
+## Bundle: Direct Deployment Engine
+
+This bundle uses the **direct deployment engine** (Databricks CLI 0.279+), not Terraform. State is stored in `.databricks/bundle/<target>/resources.json`. Benefits: no Terraform dependency, faster deploys, `bundle plan -o json` for diffs. See [Migrate to the direct deployment engine](https://docs.databricks.com/gcp/en/dev-tools/bundles/direct). For a fresh deploy on a new clone without existing state, use `DATABRICKS_BUNDLE_ENGINE=direct databricks bundle deploy -t dev`.
+
+## Serverless environment version 4 (SVLS 4) and base environment
+
+All **job** environment specs use **serverless environment version 4** (`environment_version: "4"`) for consistency. See [Manage serverless workspace base environments](https://learn.microsoft.com/en-gb/azure/databricks/admin/workspace-settings/base-environment).
+
+- **In the bundle**: Job `environments.spec` includes `environment_version: "4"` and the same dependency set (nemweb wheel, xgboost, lightgbm, prophet where applicable). Lakeflow pipeline `environment` in the bundle does not support `environment_version`; pipelines use the workspace default serverless environment.
+- **Workspace base environment** (optional): Admins can add a shared base environment so notebooks and interactive sessions use the same SVLS 4 stack. Run `uv run python config/create_base_environment.py` (uses Databricks SDK to upload `config/base-environment-svls4.yaml` to the workspace), then complete the one UI step: **Settings > Workspace admin > Compute > Base environments for serverless compute > Manage > Create new environment**, name it (e.g. "NEMWEB ML SVLS4"), and select the uploaded YAML file. Once built, users can select it from the **Base environment** dropdown in the Environment side panel. Lakeflow pipelines do not support base environments; jobs and notebooks do.
 
 ## CI/CD
 

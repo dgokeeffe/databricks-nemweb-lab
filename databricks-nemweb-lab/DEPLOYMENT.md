@@ -6,6 +6,9 @@ This project supports two deployment methods:
 
 **Modern, automated deployment** - handles versioning, builds, and deployments automatically.
 
+### Direct deployment engine
+This bundle uses the **direct deployment engine** (no Terraform). Databricks CLI 0.279+ deploys using the [direct engine](https://learn.microsoft.com/en-gb/azure/databricks/dev-tools/bundles/direct): state is in `.databricks/bundle/<target>/resources.json`. You get faster deploys and `databricks bundle plan` for change previews without installing Terraform.
+
 ### How it works:
 - `databricks.yml` defines the bundle configuration
 - The `artifacts` section automatically builds the wheel during deployment
@@ -14,6 +17,9 @@ This project supports two deployment methods:
 
 ### Usage:
 ```bash
+# Preview changes (direct engine)
+databricks bundle plan --target dev --var="environment=dev"
+
 # Build and deploy everything
 databricks bundle deploy --var="environment=dev"
 

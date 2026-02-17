@@ -2,23 +2,13 @@
 # MAGIC %md
 # MAGIC # Workshop data setup
 # MAGIC
-# MAGIC This notebook prepares the schema and volume for the NEMWEB MMS pipeline.
-# MAGIC The actual data loading is done by the MMS pipeline which runs after this notebook.
+# MAGIC This notebook downloads NEMWEB data and extracts it to CSV format for the streaming pipeline.
+# MAGIC Uses the `nemweb_ingest` module from the installed wheel.
 # MAGIC
 # MAGIC ## What this notebook does
-# MAGIC 1. Creates the target catalog and schema
-# MAGIC 2. Creates a volume for raw NEMWEB files
-# MAGIC 3. Verifies the custom data source package is installed
-# MAGIC
-# MAGIC ## What the MMS pipeline loads
-# MAGIC - `bronze_dispatch_regionsum` - 5-min regional demand/generation
-# MAGIC - `bronze_dispatch_price` - 5-min spot prices
-# MAGIC - `bronze_trading_price` - 30-min trading prices
-# MAGIC - `bronze_dispatch_unit_scada` - Real-time unit generation
-# MAGIC - `bronze_p5min_regionsolution` - Pre-dispatch forecasts
-# MAGIC - `bronze_bidperoffer` - Generator bid availability
-# MAGIC - `bronze_biddayoffer` - Generator price bands
-# MAGIC - Plus silver/gold aggregations
+# MAGIC 1. Creates the target catalog, schema, and volumes
+# MAGIC 2. Downloads NEMWEB ZIP files from the archive
+# MAGIC 3. Extracts and filters CSVs for Auto Loader streaming
 
 # COMMAND ----------
 
@@ -27,7 +17,7 @@ from datetime import datetime, timedelta
 # Configuration
 dbutils.widgets.text("catalog", "daveok", "Catalog Name")
 dbutils.widgets.text("schema", "ml_workshops", "Schema Name")
-dbutils.widgets.text("days_history", "30", "Days of History")
+dbutils.widgets.text("days_history", "7", "Days of History")
 
 CATALOG = dbutils.widgets.get("catalog")
 SCHEMA = dbutils.widgets.get("schema")
@@ -40,7 +30,7 @@ print(f"Days history: {DAYS_HISTORY}")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 1. Create catalog, schema, and volume
+# MAGIC ## 1. Create catalog, schema, and volumes
 
 # COMMAND ----------
 
@@ -50,78 +40,109 @@ spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA}")
 spark.sql(f"USE CATALOG {CATALOG}")
 spark.sql(f"USE SCHEMA {SCHEMA}")
 
-# Create volume for raw files
+# Create volumes for raw files and extracted CSVs
 spark.sql(f"CREATE VOLUME IF NOT EXISTS {CATALOG}.{SCHEMA}.raw_files")
+spark.sql(f"CREATE VOLUME IF NOT EXISTS {CATALOG}.{SCHEMA}.extracted_csv")
 
-VOLUME_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/raw_files"
+ZIP_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/raw_files"
+CSV_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/extracted_csv"
 
 print(f"Schema: {CATALOG}.{SCHEMA}")
-print(f"Volume: {VOLUME_PATH}")
+print(f"Raw files volume: {ZIP_PATH}")
+print(f"Extracted CSV volume: {CSV_PATH}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 2. Verify the custom data source package
+# MAGIC ## 2. Import download utilities from wheel
+
+# COMMAND ----------
+
+from nemweb_ingest import (
+    download_all_tables,
+    extract_all_tables,
+    get_supported_tables,
+)
+
+print(f"Supported tables: {get_supported_tables()}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 3. Calculate date range
+
+# COMMAND ----------
+
+# Calculate date range (ending 8+ days ago to ensure ARCHIVE availability)
+end_date = datetime.now() - timedelta(days=8)
+start_date = end_date - timedelta(days=DAYS_HISTORY)
+
+START_DATE = start_date.strftime("%Y-%m-%d")
+END_DATE = end_date.strftime("%Y-%m-%d")
+
+print(f"Date range: {START_DATE} to {END_DATE}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 4. Download all tables
 # MAGIC
-# MAGIC The nemweb_datasource wheel is installed via the job environment.
-# MAGIC We verify it's importable here. The actual data source registration
-# MAGIC happens in the Lakeflow pipeline (where it's supported).
+# MAGIC Downloads ZIP files from NEMWEB ARCHIVE to the raw_files volume.
+# MAGIC Tables that share the same source file (e.g., DISPATCHREGIONSUM and DISPATCHPRICE
+# MAGIC both come from DispatchIS_Reports) will share the downloaded files.
 
 # COMMAND ----------
 
-# Verify the package is installed
-try:
-    from nemweb_datasource_arrow import NemwebArrowDataSource
-    from nemweb_utils import get_version, get_nem_regions, TABLE_CONFIG
-
-    print(f"nemweb_datasource version: {get_version()}")
-    print(f"NEM regions: {get_nem_regions()}")
-    print(f"Supported tables: {list(TABLE_CONFIG.keys())}")
-    print("\nPackage verified - data source will be registered by the MMS pipeline")
-
-except ImportError as e:
-    print(f"ERROR: nemweb_datasource not installed: {e}")
-    print("The wheel should be installed via the job environment configuration.")
-    raise
+download_results = download_all_tables(
+    volume_path=ZIP_PATH,
+    start_date=START_DATE,
+    end_date=END_DATE,
+    max_workers=8,
+    skip_existing=True
+)
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 3. Test connectivity to NEMWEB
+# MAGIC ## 5. Extract CSVs for Auto Loader
+# MAGIC
+# MAGIC Extracts and filters the CSV records from the ZIP files.
+# MAGIC Each table gets its own subdirectory in the extracted_csv volume.
 
 # COMMAND ----------
 
-import urllib.request
+extract_results = extract_all_tables(
+    zip_path=ZIP_PATH,
+    csv_path=CSV_PATH,
+    skip_existing=True
+)
 
-NEMWEB_URL = "https://www.nemweb.com.au/REPORTS/CURRENT/"
+# COMMAND ----------
 
-try:
-    request = urllib.request.Request(NEMWEB_URL, headers={"User-Agent": "DatabricksWorkshop/1.0"})
-    with urllib.request.urlopen(request, timeout=10) as response:
-        print(f"NEMWEB connectivity: OK (HTTP {response.status})")
-except Exception as e:
-    print(f"WARNING: NEMWEB connectivity issue: {e}")
-    print("The pipeline may still work if files are cached in the volume.")
+# MAGIC %md
+# MAGIC ## 6. Verify extracted data
+
+# COMMAND ----------
+
+import os
+
+print("Extracted CSV files:")
+for table in get_supported_tables():
+    table_dir = os.path.join(CSV_PATH, table.lower())
+    if os.path.exists(table_dir):
+        files = [f for f in os.listdir(table_dir) if f.endswith('.csv')]
+        if files:
+            total_size = sum(os.path.getsize(os.path.join(table_dir, f)) for f in files)
+            print(f"  {table}: {len(files)} files, {total_size / 1024 / 1024:.1f} MB")
+    else:
+        print(f"  {table}: No files")
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## Setup complete
 # MAGIC
-# MAGIC The schema and volume are ready. The MMS pipeline task will run next to load all NEMWEB tables.
+# MAGIC The extracted CSV files are ready for the streaming pipeline in:
+# MAGIC - `/Volumes/{CATALOG}/{SCHEMA}/extracted_csv/<table_name>/`
 # MAGIC
-# MAGIC **Tables that will be created by the MMS pipeline:**
-# MAGIC
-# MAGIC | Layer | Table | Description |
-# MAGIC |-------|-------|-------------|
-# MAGIC | Bronze | `bronze_dispatch_regionsum` | 5-min regional demand/generation |
-# MAGIC | Bronze | `bronze_dispatch_price` | 5-min spot prices (RRP) |
-# MAGIC | Bronze | `bronze_trading_price` | 30-min trading period prices |
-# MAGIC | Bronze | `bronze_dispatch_unit_scada` | Real-time unit SCADA generation |
-# MAGIC | Bronze | `bronze_p5min_regionsolution` | Pre-dispatch regional forecasts |
-# MAGIC | Bronze | `bronze_p5min_interconnectorsoln` | Interconnector flow forecasts |
-# MAGIC | Bronze | `bronze_bidperoffer` | Generator bid availability |
-# MAGIC | Bronze | `bronze_biddayoffer` | Generator daily price bands |
-# MAGIC | Silver | `silver_dispatch_with_price` | Joined dispatch + price |
-# MAGIC | Silver | `silver_unit_generation` | Cleansed unit generation |
-# MAGIC | Gold | `gold_hourly_generation_by_unit` | Hourly generation aggregations |
+# MAGIC The MMS pipeline will use Auto Loader (cloudFiles) to stream these files into Delta tables.

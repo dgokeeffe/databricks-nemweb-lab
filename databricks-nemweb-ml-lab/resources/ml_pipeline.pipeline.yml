@@ -1,0 +1,20 @@
+# NEMWEB ML Pipeline
+# Ingests pre-downloaded NEMWEB data via Auto Loader and builds ML-ready
+# bronze/silver/gold tables for the workshop exercises.
+
+resources:
+  pipelines:
+    nemweb_ml_pipeline:
+      name: "${var.project_name}-ml-pipeline-${var.environment}"
+      serverless: true
+      catalog: "${var.catalog}"
+      schema: "${var.schema}"
+      root_path: "../src/ml_pipeline"
+
+      libraries:
+        - glob:
+            include: ../src/ml_pipeline/transformations/**
+
+      configuration:
+        pipeline.catalog: "${var.catalog}"
+        pipeline.schema: "${var.schema}"

@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "arrow-repro"
+version = "0.1.6"
+description = "Minimal reproduction of Arrow serialization error on Databricks Serverless"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyspark>=4.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/arrow_repro"]

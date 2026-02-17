@@ -32,7 +32,7 @@ from pyspark.sql.types import (
 
 # COMMAND ----------
 
-CATALOG = spark.conf.get("pipeline.catalog", "workspace")
+CATALOG = spark.conf.get("pipeline.catalog", "daveok")
 SCHEMA = spark.conf.get("pipeline.schema", "ml_workshops")
 
 print(f"Prediction pipeline config: catalog={CATALOG}, schema={SCHEMA}")
