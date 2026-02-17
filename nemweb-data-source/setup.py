@@ -14,5 +14,5 @@ setup(
         "nemweb_local",
         "local_spark_iceberg",
     ],
-    python_requires=">=3.12",
+    python_requires=">=3.10",
 )

@@ -6,8 +6,8 @@ bundle:
 artifacts:
   nemweb_datasource:
     type: whl
-    path: "./databricks-nemweb-lab/src"
-    build: "rm -f dist/*.whl && uv build --wheel --out-dir dist && mkdir -p ../artifacts && cp dist/nemweb_datasource-*.whl ../artifacts/"
+    path: "./nemweb-data-source"
+    build: "rm -f dist/*.whl && uv build --wheel --out-dir dist && mkdir -p ../databricks-nemweb-lab/artifacts && cp dist/nemweb_datasource-*.whl ../databricks-nemweb-lab/artifacts/"
 
 variables:
   # NEMWEB Lab configuration
@@ -32,18 +32,19 @@ variables:
 # Include files needed for the lab, exclude build artifacts
 sync:
   include:
-    - "databricks-nemweb-lab/src/*.py"
+    - "nemweb-data-source/*.py"
     - "databricks-nemweb-lab/pipelines/**"
     - "databricks-nemweb-lab/exercises/**"
     - "databricks-nemweb-lab/solutions/**"
     - "databricks-nemweb-lab/artifacts/**"
+    - "databricks-nemweb-lab/workshops/**"
   exclude:
-    - "databricks-nemweb-lab/src/.venv/**"
-    - "databricks-nemweb-lab/src/__pycache__/**"
-    - "databricks-nemweb-lab/src/*.egg-info/**"
-    - "databricks-nemweb-lab/src/build/**"
-    - "databricks-nemweb-lab/src/dist/**"
-    - "databricks-nemweb-lab/src/tests/**"
+    - "nemweb-data-source/.venv/**"
+    - "nemweb-data-source/__pycache__/**"
+    - "nemweb-data-source/*.egg-info/**"
+    - "nemweb-data-source/build/**"
+    - "nemweb-data-source/dist/**"
+    - "nemweb-data-source/tests/**"
     - "**/.pytest_cache/**"
     - "**/__pycache__/**"
 
@@ -59,7 +60,7 @@ targets:
     # Configure for production workspace before deploying
 
 resources:
-  # NEMWEB Lakeflow Declarative Pipeline
+  # NEMWEB Lakeflow Declarative Pipeline (basic demo)
   pipelines:
     nemweb_pipeline:
       name: "${var.project_name}-pipeline-${var.environment}"
@@ -71,7 +72,22 @@ resources:
             path: ${workspace.file_path}/databricks-nemweb-lab/pipelines/nemweb_pipeline.py
       environment:
         dependencies:
-          - ${workspace.file_path}/databricks-nemweb-lab/artifacts/nemweb_datasource-*.whl
+          - ${workspace.file_path}/databricks-nemweb-lab/artifacts/nemweb_datasource-2.10.23-py3-none-any.whl
+      configuration:
+        bundle.sourcePath: ${workspace.file_path}/databricks-nemweb-lab/pipelines
+
+    # Full NEMWEB MMS Pipeline - ingests all 8 NEMWEB tables
+    nemweb_mms_pipeline:
+      name: "${var.project_name}-mms-pipeline-${var.environment}"
+      serverless: true
+      catalog: "${var.catalog}"
+      schema: "${var.schema}"
+      libraries:
+        - notebook:
+            path: ${workspace.file_path}/databricks-nemweb-lab/pipelines/nemweb_mms_pipeline
+      environment:
+        dependencies:
+          - ${workspace.file_path}/databricks-nemweb-lab/artifacts/nemweb_datasource-2.10.23-py3-none-any.whl
       configuration:
         bundle.sourcePath: ${workspace.file_path}/databricks-nemweb-lab/pipelines
 
@@ -154,5 +170,90 @@ resources:
             base_parameters:
               catalog: "${var.catalog}"
               schema: "${var.schema}"
+
+    # ML Workshops for Load Forecasting and Market Modelling teams
+    ml_workshops:
+      name: "${var.project_name} - ML Workshops [${var.environment}]"
+      tasks:
+        - task_key: workshop_01_pipelines
+          environment_key: serverless_with_deps
+          notebook_task:
+            notebook_path: ./databricks-nemweb-lab/workshops/01_platform_and_pipelines.py
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "ml_workshops"
+
+        - task_key: workshop_02_mlflow
+          environment_key: serverless_with_deps
+          depends_on:
+            - task_key: workshop_01_pipelines
+          notebook_task:
+            notebook_path: ./databricks-nemweb-lab/workshops/02_ml_workflows_mlflow.py
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "ml_workshops"
+
+        - task_key: workshop_03_serving
+          environment_key: serverless_with_deps
+          depends_on:
+            - task_key: workshop_02_mlflow
+          notebook_task:
+            notebook_path: ./databricks-nemweb-lab/workshops/03_serving_and_monitoring.py
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "ml_workshops"
+
+        - task_key: workshop_04_advanced
+          environment_key: serverless_with_deps
+          depends_on:
+            - task_key: workshop_03_serving
+          notebook_task:
+            notebook_path: ./databricks-nemweb-lab/workshops/04_advanced_ml_genai.py
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "ml_workshops"
+      environments:
+        - environment_key: serverless_with_deps
+          spec:
+            client: "1"
+            dependencies:
+              - ${workspace.file_path}/databricks-nemweb-lab/artifacts/nemweb_datasource-2.10.23-py3-none-any.whl
+              - xgboost
+              - lightgbm
+              - prophet
+
+    # Workshop data setup - runs the full MMS pipeline
+    workshop_data_setup:
+      name: "${var.project_name} - Workshop Data Setup [${var.environment}]"
+      tasks:
+        - task_key: setup_schema
+          environment_key: serverless_with_wheel
+          notebook_task:
+            notebook_path: ./databricks-nemweb-lab/workshops/00_workshop_data_setup.py
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "ml_workshops"
+              days_history: "30"
+
+        - task_key: run_mms_pipeline
+          depends_on:
+            - task_key: setup_schema
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.nemweb_mms_pipeline.id}
+            full_refresh: true
+      environments:
+        - environment_key: serverless_with_wheel
+          spec:
+            client: "1"
+            dependencies:
+              - ${workspace.file_path}/databricks-nemweb-lab/artifacts/nemweb_datasource-2.10.23-py3-none-any.whl
+
+    # MMS Pipeline refresh job
+    nemweb_mms_pipeline_job:
+      name: "${var.project_name} - MMS Pipeline Refresh [${var.environment}]"
+      tasks:
+        - task_key: refresh_mms_pipeline
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.nemweb_mms_pipeline.id}
 
 # For more options and schema, see: https://docs.databricks.com/aws/en/dev-tools/bundles/settings

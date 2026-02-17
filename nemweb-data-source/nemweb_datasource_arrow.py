@@ -113,6 +113,125 @@ SCHEMAS = {
             ("INVALIDFLAG", StringType()),
         ],
     },
+    # Real-time unit-level SCADA data (generation per power station)
+    "DISPATCH_UNIT_SCADA": {
+        "record_type": "DISPATCH,UNIT_SCADA",
+        "fields": [
+            ("SETTLEMENTDATE", TimestampType()),
+            ("DUID", StringType()),  # Dispatchable Unit ID (power station)
+            ("SCADAVALUE", DoubleType()),  # MW output
+            ("LASTCHANGED", TimestampType()),
+        ],
+    },
+    # 5-minute pre-dispatch regional solution (price/demand forecasts)
+    "P5MIN_REGIONSOLUTION": {
+        "record_type": "P5MIN,REGIONSOLUTION",
+        "fields": [
+            ("RUN_DATETIME", TimestampType()),
+            ("INTERVENTION", StringType()),
+            ("INTERVAL_DATETIME", TimestampType()),
+            ("REGIONID", StringType()),
+            ("RRP", DoubleType()),  # Regional Reference Price forecast
+            ("ROP", DoubleType()),  # Regional Override Price
+            ("EXCESSGENERATION", DoubleType()),
+            ("TOTALDEMAND", DoubleType()),
+            ("AVAILABLEGENERATION", DoubleType()),
+            ("AVAILABLELOAD", DoubleType()),
+            ("DEMANDFORECAST", DoubleType()),
+            ("DISPATCHABLEGENERATION", DoubleType()),
+            ("DISPATCHABLELOAD", DoubleType()),
+            ("NETINTERCHANGE", DoubleType()),
+            ("LASTCHANGED", TimestampType()),
+        ],
+    },
+    # 5-minute pre-dispatch interconnector solution
+    "P5MIN_INTERCONNECTORSOLN": {
+        "record_type": "P5MIN,INTERCONNECTORSOLN",
+        "fields": [
+            ("RUN_DATETIME", TimestampType()),
+            ("INTERVENTION", StringType()),
+            ("INTERCONNECTORID", StringType()),
+            ("INTERVAL_DATETIME", TimestampType()),
+            ("METEREDMWFLOW", DoubleType()),
+            ("MWFLOW", DoubleType()),
+            ("MWLOSSES", DoubleType()),
+            ("MARGINALVALUE", DoubleType()),
+            ("EXPORTLIMIT", DoubleType()),
+            ("IMPORTLIMIT", DoubleType()),
+            ("LASTCHANGED", TimestampType()),
+        ],
+    },
+    # Generator bid per-period offer data (availability per trading period)
+    "BIDPEROFFER_D": {
+        "record_type": "BID,BIDPEROFFER_D",
+        "fields": [
+            ("SETTLEMENTDATE", TimestampType()),
+            ("DUID", StringType()),  # Dispatchable Unit ID
+            ("BIDTYPE", StringType()),  # ENERGY, RAISE6SEC, LOWER60SEC, etc.
+            ("BIDSETTLEMENTDATE", TimestampType()),
+            ("OFFERDATE", TimestampType()),
+            ("PERIODID", StringType()),  # Trading period (1-48)
+            ("VERSIONNO", StringType()),
+            ("MAXAVAIL", DoubleType()),  # Max availability MW
+            ("FIXEDLOAD", DoubleType()),
+            ("ROCUP", DoubleType()),  # Ramp up rate MW/min
+            ("ROCDOWN", DoubleType()),  # Ramp down rate MW/min
+            ("ENABLEMENTMIN", DoubleType()),
+            ("ENABLEMENTMAX", DoubleType()),
+            ("LOWBREAKPOINT", DoubleType()),
+            ("HIGHBREAKPOINT", DoubleType()),
+            ("BANDAVAIL1", DoubleType()),
+            ("BANDAVAIL2", DoubleType()),
+            ("BANDAVAIL3", DoubleType()),
+            ("BANDAVAIL4", DoubleType()),
+            ("BANDAVAIL5", DoubleType()),
+            ("BANDAVAIL6", DoubleType()),
+            ("BANDAVAIL7", DoubleType()),
+            ("BANDAVAIL8", DoubleType()),
+            ("BANDAVAIL9", DoubleType()),
+            ("BANDAVAIL10", DoubleType()),
+            ("LASTCHANGED", TimestampType()),
+            ("PASAAVAILABILITY", DoubleType()),
+            ("INTERVAL_DATETIME", TimestampType()),
+            ("DIRECTION", StringType()),  # GEN or LOAD
+            ("ENERGYLIMIT", DoubleType()),
+            ("RECALL_PERIOD", StringType()),
+        ],
+    },
+    # Generator bid daily offer data (price bands)
+    "BIDDAYOFFER_D": {
+        "record_type": "BID,BIDDAYOFFER_D",
+        "fields": [
+            ("SETTLEMENTDATE", TimestampType()),
+            ("DUID", StringType()),
+            ("BIDTYPE", StringType()),
+            ("BIDSETTLEMENTDATE", TimestampType()),
+            ("OFFERDATE", TimestampType()),
+            ("VERSIONNO", StringType()),
+            ("PARTICIPANTID", StringType()),
+            ("DAILYENERGYCONSTRAINT", DoubleType()),
+            ("REBIDEXPLANATION", StringType()),
+            ("PRICEBAND1", DoubleType()),
+            ("PRICEBAND2", DoubleType()),
+            ("PRICEBAND3", DoubleType()),
+            ("PRICEBAND4", DoubleType()),
+            ("PRICEBAND5", DoubleType()),
+            ("PRICEBAND6", DoubleType()),
+            ("PRICEBAND7", DoubleType()),
+            ("PRICEBAND8", DoubleType()),
+            ("PRICEBAND9", DoubleType()),
+            ("PRICEBAND10", DoubleType()),
+            ("MINIMUMLOAD", DoubleType()),
+            ("T1", DoubleType()),
+            ("T2", DoubleType()),
+            ("T3", DoubleType()),
+            ("T4", DoubleType()),
+            ("NORMALSTATUS", StringType()),
+            ("LASTCHANGED", TimestampType()),
+            ("ENTRYTYPE", StringType()),
+            ("DIRECTION", StringType()),
+        ],
+    },
 }
 
 # URL configuration
@@ -126,9 +245,19 @@ MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.0
 
 TABLE_TO_FOLDER = {
+    # Dispatch IS reports (5-minute regional data)
     "DISPATCHREGIONSUM": ("DispatchIS_Reports", "DISPATCHIS"),
     "DISPATCHPRICE": ("DispatchIS_Reports", "DISPATCHIS"),
+    # Trading IS reports (30-minute trading data)
     "TRADINGPRICE": ("TradingIS_Reports", "TRADINGIS"),
+    # Dispatch SCADA (real-time unit generation)
+    "DISPATCH_UNIT_SCADA": ("Dispatch_SCADA", "DISPATCHSCADA"),
+    # P5MIN reports (5-minute pre-dispatch forecasts)
+    "P5MIN_REGIONSOLUTION": ("P5_Reports", "P5MIN"),
+    "P5MIN_INTERCONNECTORSOLN": ("P5_Reports", "P5MIN"),
+    # Bidmove Complete (generator bids - daily file)
+    "BIDPEROFFER_D": ("Bidmove_Complete", "BIDMOVE_COMPLETE"),
+    "BIDDAYOFFER_D": ("Bidmove_Complete", "BIDMOVE_COMPLETE"),
 }
 
 
