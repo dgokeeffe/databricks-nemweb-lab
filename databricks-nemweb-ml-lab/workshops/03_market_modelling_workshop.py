@@ -499,6 +499,24 @@ def create_price_forecast_features(df: pd.DataFrame) -> pd.DataFrame:
 
 pdf_features = create_price_forecast_features(pdf)
 
+if len(pdf_features) < 2:
+    print(
+        f"Only {len(pdf_features)} rows after full feature engineering; "
+        "switching to a minimal feature set for small demo windows."
+    )
+    minimal = pdf.copy()
+    minimal["supply_margin_mw"] = minimal["available_generation_mw"] - minimal["total_demand_mw"]
+    minimal["hour"] = minimal.index.hour
+    minimal["day_of_week"] = minimal.index.dayofweek
+    minimal["is_weekend"] = minimal.index.dayofweek.isin([5, 6]).astype(int)
+    minimal["demand_lag_1"] = minimal["total_demand_mw"].shift(1)
+    minimal["rrp_lag_1"] = minimal["rrp"].shift(1)
+    if "air_temp_c" in minimal.columns:
+        minimal["air_temp_c"] = minimal["air_temp_c"].ffill().bfill()
+    pdf_features = minimal.dropna(
+        subset=["rrp", "supply_margin_mw", "demand_lag_1", "rrp_lag_1"]
+    )
+
 # Identify feature columns (everything except target and metadata)
 exclude_cols = ["rrp", "rop", "region_id", "_processed_at"]
 feature_cols = [c for c in pdf_features.columns if c not in exclude_cols]
@@ -535,8 +553,8 @@ y = pdf_features["rrp"]
 # Time-based split - last 20% for testing
 if len(X) < 2:
     raise ValueError(
-        "Not enough rows after feature engineering to create train/test split. "
-        "Ensure the pipeline has ingested more history, then rerun."
+        f"Not enough rows after feature engineering ({len(X)}). "
+        "Let the streaming pipeline run longer, then rerun the workshop."
     )
 
 split_idx = int(len(X) * 0.8)
