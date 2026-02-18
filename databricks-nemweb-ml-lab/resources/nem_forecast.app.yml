@@ -4,6 +4,11 @@ resources:
       name: "nem-forecast-${var.environment}"
       description: "NEM Forecast dashboard for load and price predictions"
       source_code_path: ../app
+      resources:
+        - name: "sql-warehouse"
+          sql_warehouse:
+            id: "${var.warehouse_id}"
+            permission: "CAN_USE"
       config:
         command:
           - gunicorn
@@ -14,7 +19,7 @@ resources:
           - "2"
         env:
           - name: DATABRICKS_WAREHOUSE_ID
-            value: "${var.warehouse_id}"
+            value_from: "sql-warehouse"
           - name: NEMWEB_CATALOG
             value: "${var.catalog}"
           - name: NEMWEB_SCHEMA

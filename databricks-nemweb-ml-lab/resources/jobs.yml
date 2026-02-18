@@ -47,8 +47,19 @@ resources:
       name: "${var.project_name} - Prediction Pipeline Refresh [${var.environment}]"
       tasks:
         - task_key: refresh_predictions
-          pipeline_task:
-            pipeline_id: ${resources.pipelines.nemweb_prediction_pipeline.id}
+          environment_key: serverless_ml_scoring
+          notebook_task:
+            notebook_path: ../pipelines/nemweb_prediction_pipeline.py
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+      environments:
+        - environment_key: serverless_ml_scoring
+          spec:
+            environment_version: "4"
+            dependencies:
+              - ${workspace.root_path}/artifacts/.internal/nemweb_datasource-2.12.1-py3-none-any.whl
+              - xgboost
 
     # -- Workshop Jobs --
     ml_workshop:
@@ -176,8 +187,12 @@ resources:
           depends_on:
             - task_key: train_load_forecast
             - task_key: train_price_forecast
-          pipeline_task:
-            pipeline_id: ${resources.pipelines.nemweb_prediction_pipeline.id}
+          environment_key: serverless_ml_v2
+          notebook_task:
+            notebook_path: ../pipelines/nemweb_prediction_pipeline.py
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
       environments:
         - environment_key: serverless_ml_v2
           spec:

@@ -14,7 +14,7 @@ LOAD_FORECAST_EXCLUDE_COLS = ["total_demand_mw", "region_id", "rop", "_processed
 PRICE_FORECAST_EXCLUDE_COLS = ["rrp", "rop", "region_id", "_processed_at"]
 
 
-def create_load_forecast_features(df: pd.DataFrame) -> pd.DataFrame:
+def create_load_forecast_features(df: pd.DataFrame, dropna: bool = True) -> pd.DataFrame:
     """Create features for load forecasting (predicting TOTALDEMAND).
 
     Temperature is the primary driver of electricity demand:
@@ -66,10 +66,10 @@ def create_load_forecast_features(df: pd.DataFrame) -> pd.DataFrame:
     if "demand_forecast_mw" in out.columns:
         out["aemo_forecast_error"] = out["demand_forecast_mw"] - out["total_demand_mw"]
 
-    return out.dropna()
+    return out.dropna() if dropna else out
 
 
-def create_price_forecast_features(df: pd.DataFrame) -> pd.DataFrame:
+def create_price_forecast_features(df: pd.DataFrame, dropna: bool = True) -> pd.DataFrame:
     """Create features for price forecasting (predicting RRP).
 
     The key driver of NEM spot prices is the demand-supply margin.
@@ -123,4 +123,4 @@ def create_price_forecast_features(df: pd.DataFrame) -> pd.DataFrame:
     out["dow_sin"] = np.sin(2 * np.pi * out["day_of_week"] / 7)
     out["dow_cos"] = np.cos(2 * np.pi * out["day_of_week"] / 7)
 
-    return out.dropna()
+    return out.dropna() if dropna else out

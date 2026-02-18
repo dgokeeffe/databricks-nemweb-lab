@@ -5,7 +5,11 @@
 # https://github.com/databricks/bundle-examples/tree/main/lakeflow_pipelines_python
 #
 # Deploy: cd databricks-nemweb-ml-lab && databricks bundle deploy --profile daveok --var="environment=dev"
-# First deploy (no state): DATABRICKS_BUNDLE_ENGINE=direct databricks bundle deploy -t dev
+#
+# Uses Direct Deployment Engine (not Terraform). No YAML key exists for this -
+# set env var on first deploy: DATABRICKS_BUNDLE_ENGINE=direct databricks bundle deploy -t dev
+# Subsequent deploys auto-detect from .databricks/bundle/<target>/resources.json state.
+# To migrate existing Terraform state: databricks bundle deployment migrate -t dev
 
 bundle:
   name: nemweb-ml-lab

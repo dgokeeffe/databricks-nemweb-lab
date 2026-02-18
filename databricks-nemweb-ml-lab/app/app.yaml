@@ -8,18 +8,14 @@ command:
 
 env:
   - name: DATABRICKS_WAREHOUSE_ID
-    valueFrom: resources.sql_warehouse.id
-  - name: DATABRICKS_HOST
-    valueFrom: resources.workspace.host
-  - name: DATABRICKS_TOKEN
-    valueFrom: resources.credentials.token
+    valueFrom: "sql-warehouse"
   - name: NEMWEB_CATALOG
     value: "daveok"
   - name: NEMWEB_SCHEMA
     value: "ml_workshops"
 
 resources:
-  sql_warehouse:
-    permission: CAN_USE
-  credentials:
-    permission: CAN_USE
+  - name: "sql-warehouse"
+    sql_warehouse:
+      id: "e4082fdb7ea19a15"
+      permission: CAN_USE
