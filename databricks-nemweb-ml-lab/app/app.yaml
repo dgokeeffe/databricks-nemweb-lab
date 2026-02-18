@@ -13,8 +13,10 @@ env:
     valueFrom: resources.workspace.host
   - name: DATABRICKS_TOKEN
     valueFrom: resources.credentials.token
-  # NEMWEB_CATALOG and NEMWEB_SCHEMA are set by bundle app config
-  # in resources/nem_forecast.app.yml for bundle-managed deployments.
+  - name: NEMWEB_CATALOG
+    value: "daveok"
+  - name: NEMWEB_SCHEMA
+    value: "ml_workshops"
 
 resources:
   sql_warehouse:
